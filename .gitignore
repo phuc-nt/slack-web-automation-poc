@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+poc-secrets.json
+
+# Run output: screenshots and reports contain request data
+artifacts/
+test-results/
+playwright-report/
+coverage/
+*.log
+
+# Local tooling
+.DS_Store
+.vscode/
+.idea/
+.claude/settings.local.json

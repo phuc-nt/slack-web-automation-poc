@@ -1,0 +1,20 @@
+{
+  "name": "slack-web-automation-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "POC: register a building visitor from Slack by driving a web form with Playwright, stopping for human approval before submit.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "portal": "node --env-file-if-exists=.env src/mock-portal/start-mock-portal.js",
+    "slack": "node --env-file-if-exists=.env src/slack/start-slack-app.js",
+    "demo": "node --env-file-if-exists=.env scripts/run-local-demo.js",
+    "test": "node --env-file-if-exists=.env --test --test-concurrency=1 \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@slack/bolt": "^5.1.0",
+    "playwright": "^1.63.0"
+  }
+}

@@ -3,8 +3,7 @@
 // the Slack form; the user still reviews every field.
 
 import { addDays, BUILDINGS, EQUIPMENT, keepWellFormed, localToday, VISITOR_TYPES } from '../core/registration-fields.js';
-
-const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
+import { chatCompletion } from './openrouter-chat.js';
 
 const choices = (options) => options.map((o) => `"${o.value}" (${o.label})`).join(', ');
 
@@ -47,23 +46,15 @@ function extractJson(text) {
 }
 
 export async function parseFreeTextRequest(text, { apiKey, model, now = new Date(), timeoutMs = 20_000, fetchImpl = fetch } = {}) {
-  if (!apiKey) throw new Error('OPENROUTER_API_KEY is not set');
-  const response = await fetchImpl(ENDPOINT, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      temperature: 0,
-      messages: [
-        { role: 'system', content: systemPrompt(localToday(now)) },
-        { role: 'user', content: text },
-      ],
-    }),
-    signal: AbortSignal.timeout(timeoutMs),
+  const content = await chatCompletion({
+    apiKey,
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt(localToday(now)) },
+      { role: 'user', content: text },
+    ],
+    timeoutMs,
+    fetchImpl,
   });
-  if (!response.ok) throw new Error(`LLM request failed with HTTP ${response.status}`);
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content;
-  if (!content) throw new Error('The model returned an empty answer');
   return keepWellFormed(extractJson(content));
 }

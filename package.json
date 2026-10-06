@@ -10,6 +10,9 @@
   "scripts": {
     "portal": "node --env-file-if-exists=.env src/mock-portal/start-mock-portal.js",
     "slack": "node --env-file-if-exists=.env src/slack/start-slack-app.js",
+    "report": "node --env-file-if-exists=.env scripts/run-daily-report.js",
+    "seed": "node --env-file-if-exists=.env scripts/seed-sample-channel.js",
+    "seed:jira": "node --env-file-if-exists=.env scripts/seed-jira-issues.js",
     "demo": "node --env-file-if-exists=.env scripts/run-local-demo.js",
     "test": "node --env-file-if-exists=.env --test --test-concurrency=1 \"test/*.test.js\""
   },

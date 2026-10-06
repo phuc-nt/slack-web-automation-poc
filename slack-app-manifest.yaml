@@ -14,6 +14,10 @@ features:
       description: Register a building visitor
       usage_hint: "[optional: describe the visit in one sentence]"
       should_escape: false
+    - command: /daily-report
+      description: Post the project's daily report
+      usage_hint: "[optional: YYYY-MM-DD, default today]"
+      should_escape: false
   shortcuts:
     - name: Register a visitor
       type: global
@@ -26,6 +30,14 @@ oauth_config:
       - chat:write
       - im:write
       - files:write
+      # Daily report: read the project channels the bot is invited to
+      - channels:history
+      - groups:history
+      - channels:read
+      - groups:read
+      - users:read
+      # Test data only (`npm run seed`): post under simulated names
+      - chat:write.customize
 settings:
   interactivity:
     is_enabled: true

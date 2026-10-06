@@ -14,7 +14,7 @@ async function postEphemeralReply(responseUrl, text) {
   });
 }
 
-export function createSlackHandlers({ service, parseRequest = null, logger = silentLogger, replyInChannel = postEphemeralReply }) {
+export function createSlackHandlers({ service, parseRequest = null, reporter = null, reportChannel = '', logger = silentLogger, replyInChannel = postEphemeralReply }) {
   /** `/visitor` opens the form; `/visitor <free text>` pre-fills it with the LLM's reading. */
   async function onCommand({ ack, command, client }) {
     await ack();
@@ -127,11 +127,31 @@ export function createSlackHandlers({ service, parseRequest = null, logger = sil
     }
   }
 
-  return { onCommand, onShortcut, onModalSubmit, onApprove, onEdit, onCancel };
+  /** `/daily-report [YYYY-MM-DD]`: the report goes to the report channel; the requester only gets a pointer. */
+  async function onReportCommand({ ack, command, respond }) {
+    await ack();
+    const reply = (text) => respond({ response_type: 'ephemeral', text });
+    if (!reporter) {
+      await reply('The daily report is not configured on this app.');
+      return;
+    }
+    const date = (command.text || '').trim() || undefined;
+    await reply(`Writing the daily report${date ? ` for ${date}` : ''}…`);
+    try {
+      const report = await reporter.post(date);
+      await reply(`Daily report for ${report.date} posted in <#${reportChannel}>.`);
+    } catch (error) {
+      logger.error('daily_report_failed', { message: error.message });
+      await reply(`Could not write the daily report: ${error.message}`);
+    }
+  }
+
+  return { onCommand, onShortcut, onModalSubmit, onApprove, onEdit, onCancel, onReportCommand };
 }
 
 export function registerSlackHandlers(app, handlers) {
   app.command('/visitor', handlers.onCommand);
+  app.command('/daily-report', handlers.onReportCommand);
   app.shortcut('register_visitor', handlers.onShortcut);
   app.view(MODAL_CALLBACK_ID, handlers.onModalSubmit);
   app.action('approve_registration', handlers.onApprove);

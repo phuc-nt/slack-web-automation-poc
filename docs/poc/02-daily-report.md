@@ -34,6 +34,52 @@ flowchart LR
     C --> P[One fixed Slack channel]
 ```
 
+### 3.1 Components
+
+```mermaid
+flowchart LR
+    U[Project member]
+    subgraph SLK[Slack]
+        SC[Project channels<br/>read]
+        RC[Report channel<br/>written]
+    end
+    JI[Jira Cloud<br/>read-only]
+    OR[LLM provider<br/>OpenRouter]
+
+    subgraph AWS[The organisation's AWS environment, not yet deployed]
+        SM[AWS Secrets Manager<br/>Slack tokens, LLM key, Atlassian email and token]
+        CW[Amazon CloudWatch Logs]
+        ECR[Amazon ECR]
+        BR[Amazon Bedrock<br/>proposed]
+        subgraph TASK[Amazon ECS on AWS Fargate: the same task as the other POCs]
+            EP[Entry points<br/>/daily-report, daily timer]
+            RS[Report service<br/>day window, flags, clean-up, posting]
+            CR[Channel reader]
+            JR[Jira reader]
+            RW[Report writer<br/>prompt]
+            LC[LLM client]
+        end
+    end
+
+    U -->|/daily-report| SLK
+    SLK <-->|Socket Mode| EP
+    EP --> RS
+    RS --> CR
+    RS --> JR
+    RS --> RW
+    RW --> LC
+    CR -->|history, replies, names| SC
+    JR -->|one JQL query| JI
+    LC -->|the day's chat and the issue list| OR
+    LC -.->|proposed| BR
+    RS -->|the report| RC
+    SM -.->|at task start| TASK
+    ECR -.->|image| TASK
+    RS -.->|report events| CW
+```
+
+AWS services in this POC: the same ECS task, ECR image, Secrets Manager secret and CloudWatch log group as the platform, with two more keys in the secret. It needs no NAT Gateway or Elastic IP of its own, because Slack, Jira and the LLM provider do not check the caller's address; when it shares a task with the web form POC its traffic leaves through that POC's NAT Gateway. **None of this has been run for the daily report**: it has only run from a laptop, where the same components run without the AWS box.
+
 | Component | Responsibility | In the repo |
 |---|---|---|
 | Channel reader | The messages of each channel for one day, with thread replies, display names and file names, in the order written | `src/report/slack-channel-history.js` |
@@ -42,6 +88,85 @@ flowchart LR
 | Report writer | The prompt and the call to the LLM | `src/llm/write-daily-report.js` |
 | Factory | Builds the reporter from configuration; returns nothing when the report is not configured | `src/report/configured-reporter.js` |
 | Entry points | `/daily-report [YYYY-MM-DD]` in Slack; `REPORT_TIME`; a terminal script | `src/slack/slack-handlers.js`, `src/slack/start-slack-app.js`, `scripts/run-daily-report.js` |
+
+### 3.2 Sequences
+
+**On request**, with the degraded branches:
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant S as Slack
+    participant E as Entry point
+    participant R as Report service
+    participant J as Jira Cloud
+    participant L as LLM
+
+    U->>S: /daily-report [YYYY-MM-DD]
+    S->>E: command event
+    E-->>S: acknowledge
+    E-->>S: "Writing the daily report", to the requester only
+    E->>R: post(date)
+    R->>R: day window in the process's time zone
+    loop each channel in REPORT_CHANNELS
+        R->>S: conversations.history for the window
+        S-->>R: messages
+        R->>S: conversations.replies for each thread, users.info for each name
+        S-->>R: replies and display names
+    end
+    alt Jira is configured
+        R->>J: POST /rest/api/3/search/jql
+        alt Jira answers
+            J-->>R: up to 100 issues
+            R->>R: flag each issue OVERDUE and NOT-IN-CHAT
+        else Jira fails
+            J-->>R: error or timeout
+            R->>R: continue with chat alone, note the reason for the header
+        end
+    else Jira is not configured
+        R->>R: continue with chat alone
+    end
+    alt no messages and no issues
+        R->>R: one-line report, the LLM is not called
+    else
+        R->>L: prompt, transcript, issue table with flags
+        L-->>R: report text in eight sections
+        R->>R: neutralise mentions, add the header, split at 3,500 characters
+    end
+    R->>S: chat.postMessage to REPORT_POST_CHANNEL, one per part
+    R-->>E: done
+    E-->>S: "posted in #channel", to the requester only
+    opt reading Slack or calling the LLM fails
+        E-->>S: "Could not write the daily report" and the reason, to the requester only
+    end
+```
+
+**On schedule.** The same work, started by the timer the process arms at start-up:
+
+```mermaid
+sequenceDiagram
+    participant T as Daily timer
+    participant R as Report service
+    participant S as Slack
+    participant J as Jira Cloud
+    participant L as LLM
+
+    Note over T: Armed at start-up when REPORT_TIME is set
+    T->>R: local time reaches REPORT_TIME, post(today)
+    R->>S: read today's messages up to now
+    R->>J: read issues
+    R->>L: write the report
+    L-->>R: text
+    R->>S: post to REPORT_POST_CHANNEL
+    alt anything fails
+        R->>R: log scheduled_report_failed, nothing is posted, no retry
+    end
+    R->>T: arm for the same time tomorrow
+```
+
+**From a terminal.** `npm run report` runs the report service outside the Slack app, with the same reads; it prints the report and posts only with `--post`. This is the path that was run on 2026-10-06.
+
+### 3.3 The report
 
 The report has a header line and eight sections, always in this order:
 

@@ -57,6 +57,52 @@ flowchart LR
 
 ### 3.1 Components
 
+```mermaid
+flowchart LR
+    U[Requester]
+    SL[Slack]
+    OR[LLM provider<br/>OpenRouter]
+    WA[Target web app<br/>accepts registered IPs only]
+
+    subgraph AWS[The organisation's AWS environment]
+        SM[AWS Secrets Manager<br/>web app account, Slack tokens, LLM key]
+        CW[Amazon CloudWatch Logs]
+        ECR[Amazon ECR]
+        subgraph VPC[Amazon VPC]
+            subgraph TASK[Amazon ECS on AWS Fargate: one task in a private subnet]
+                SE[Slack entry<br/>command, form, buttons]
+                FD[Field definitions]
+                PF[LLM pre-fill]
+                JS[Job service<br/>jobs awaiting approval, in memory]
+                BW[Browser worker<br/>Playwright and Chromium]
+                SS[Secret store]
+            end
+            NAT[NAT Gateway<br/>with one Elastic IP]
+        end
+    end
+
+    U <--> SL
+    SL <-->|Socket Mode| SE
+    SE --> PF
+    SE --> JS
+    FD -.->|form, prompt and fill are generated from it| SE
+    FD -.-> PF
+    FD -.-> BW
+    JS --> BW
+    BW --> SS
+    PF -->|one sentence| NAT
+    BW -->|sign in, fill, submit| NAT
+    SE --> NAT
+    NAT -->|from the registered IP| WA
+    NAT --> OR
+    NAT --> SL
+    SM -.->|at task start| SS
+    ECR -.->|image| TASK
+    JS -.->|job events| CW
+```
+
+AWS services in this POC: ECS on Fargate, ECR, Secrets Manager, CloudWatch Logs and an IAM execution role, all run on 2026-10-05; and a VPC with a NAT Gateway and an Elastic IP, which this POC requires for the registered IP address and which has **not been run**. In the trial the mock portal ran as a second container in the same task, in place of the target web app.
+
 | Component | Responsibility | In the repo |
 |---|---|---|
 | Slack entry | Receives `/visitor`, opens the form, returns per-field errors, sends the screenshot and the approval buttons | `src/slack/slack-handlers.js`, `src/slack/registration-modal.js` |
@@ -67,7 +113,9 @@ flowchart LR
 | Secret store | Sign-in credentials for the web application; the source can change without touching the worker | `src/core/secret-store.js` |
 | Target web application | In the POC, a simulated website | `src/mock-portal/` |
 
-### 3.2 Sequence
+### 3.2 Sequences
+
+**Main flow**, with the three ways a waiting request ends:
 
 ```mermaid
 sequenceDiagram
@@ -96,6 +144,78 @@ sequenceDiagram
     else Cancel or expiry
         A->>W: close the session, submit nothing
     end
+```
+
+**Stops and rejections.** Every branch ends with nothing submitted:
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant S as Slack
+    participant A as Slack entry + Job service
+    participant L as LLM
+    participant W as Browser worker
+    participant T as Target web app
+
+    U->>S: command with a free-text request
+    A->>L: read the request
+    alt the LLM fails or returns a bad format
+        A->>S: empty form with a note
+    else
+        A->>S: pre-filled form
+    end
+    U->>S: send the form
+    alt a field breaks a rule known in advance
+        A->>S: error shown on the field, the browser does not run
+    else the same requester already has this request
+        A->>S: rejected, with the reference number if it was submitted
+    else the form is valid
+        A->>W: create job
+        W->>T: sign in
+        alt sign-in fails, or a CAPTCHA or one-time code is asked for
+            W-->>A: stop
+            A->>S: a person is needed
+        else signed in
+            W->>T: fill the form
+            alt the web app rejects by its own rule
+                T-->>W: error on the page
+                A->>S: the web app's message, word for word
+            else the confirmation screen differs from the request
+                W-->>A: mismatched fields
+                A->>S: stopped, the fields are named, no approval offered
+            else the confirmation screen matches
+                A->>S: screenshot + Submit / Edit / Cancel
+                alt someone other than the requester clicks
+                    A->>S: rejected
+                else nobody approves within 10 minutes
+                    A->>W: close the browser
+                end
+            end
+        end
+    end
+```
+
+**Where the traffic goes on AWS.** One request, seen from the network:
+
+```mermaid
+sequenceDiagram
+    participant S as Slack
+    participant P as Fargate task
+    participant N as NAT Gateway (Elastic IP)
+    participant L as LLM provider
+    participant T as Target web app
+
+    Note over P,S: The WebSocket was opened by the task at start-up, through the NAT Gateway
+    S->>P: command event, over the open WebSocket
+    P->>N: HTTPS to the LLM provider
+    N->>L: from the Elastic IP
+    L-->>P: suggested values
+    P->>N: HTTPS to Slack's API (form, messages, screenshot)
+    N->>S: from the Elastic IP
+    P->>N: HTTPS from the browser
+    N->>T: from the Elastic IP, the only address the web app accepts
+    T-->>P: pages
+    Note over P: Secrets Manager and CloudWatch Logs are not called by the application.<br/>ECS read the secret before the process started and ships stdout as logs
 ```
 
 The browser stays open on the confirmation screen while the job waits for approval. What the user sees in the screenshot is exactly what gets submitted; no second fill happens in between. The consequence: job state lives in the memory of one process, and the platform must run exactly one copy of it.

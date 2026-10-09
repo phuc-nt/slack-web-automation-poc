@@ -23,6 +23,79 @@ The repository grew from the first POC, and some names still show it: the Slack 
 
 Everything runs in one Node.js 22 process. It connects to Slack with Socket Mode, an outbound WebSocket, so it needs no public address. Every other connection is an outbound HTTPS call.
 
+### 2.1 Component diagram
+
+Every component of the platform, with the AWS services drawn by name. Solid lines carry application traffic; dotted lines are AWS's own plumbing or parts not yet built.
+
+```mermaid
+flowchart LR
+    U[Staff]
+
+    subgraph EXT[Outside AWS]
+        SL[Slack]
+        OR[LLM provider<br/>OpenRouter]
+        JI[Jira Cloud]
+        WA[Target web app<br/>accepts registered IPs only]
+        CF[Confluence<br/>planned]
+    end
+
+    subgraph AWS[The organisation's AWS environment, selected Region]
+        ECR[Amazon ECR<br/>container image]
+        SM[AWS Secrets Manager<br/>tokens and passwords]
+        IAM[IAM execution role]
+        CW[Amazon CloudWatch Logs]
+        BR[Amazon Bedrock<br/>proposed]
+        subgraph VPC[Amazon VPC, one Availability Zone]
+            subgraph PRI[Private subnet]
+                subgraph ECS[Amazon ECS on AWS Fargate: one service, one task]
+                    APP[Platform process<br/>Slack entry, POC logic, LLM client]
+                    BW[Chromium<br/>browser worker]
+                end
+            end
+            subgraph PUB[Public subnet]
+                NAT[NAT Gateway<br/>with one Elastic IP]
+            end
+            IGW[Internet Gateway]
+        end
+    end
+
+    U <--> SL
+    APP --> BW
+    APP -->|all outbound HTTPS| NAT
+    BW --> NAT
+    NAT --> IGW
+    IGW <-->|Socket Mode WebSocket| SL
+    IGW -->|chat completions| OR
+    IGW -->|search issues| JI
+    IGW -->|form filling, from the fixed IP| WA
+    IGW -.-> CF
+
+    ECR -.->|image at task start| ECS
+    SM -.->|secrets as environment variables at task start| APP
+    IAM -.->|lets ECS pull the image, read the secret, write logs| ECS
+    APP -.->|stdout| CW
+    APP -.->|Converse, proposed| BR
+```
+
+Which AWS service takes part, and for which POC:
+
+| AWS service | Role | Web form automation | Daily report | Status |
+|---|---|---|---|---|
+| Amazon ECS on AWS Fargate | Runs the one process as a service with exactly one task (1 vCPU, 2 GB, `ARM64`) | Yes | Yes | Run on 2026-10-05 for the web form POC |
+| Amazon ECR | Holds the container image | Yes | Yes | Run |
+| AWS Secrets Manager | Holds Slack tokens, the LLM key, the web app password, the Atlassian token. ECS injects them as environment variables when the task starts | Yes | Yes | Run, without the Atlassian token |
+| IAM execution role | Used by ECS itself, not by the application: pull the image, read the secret, write logs | Yes | Yes | Run |
+| Amazon CloudWatch Logs | Receives the process's stdout, kept 7 days | Yes | Yes | Run |
+| Amazon VPC: private and public subnet, Internet Gateway | A network of the platform's own, with no inbound rule | Yes | Not required | **Not run.** The trial used the default VPC and a public subnet |
+| NAT Gateway with an Elastic IP | The one fixed outbound address | Yes: the web app checks the caller's IP | Not required: Slack, Jira and the LLM do not check it | **Not run** |
+| Amazon Bedrock, with an IAM task role | The LLM inside AWS | Proposed | Proposed | **Not built**; see section 3.2 |
+
+No load balancer, API Gateway, Lambda, queue or database takes part: Socket Mode removes the inbound side, and state is held in memory. An EventBridge Scheduler rule for the report's schedule has been named as a production option and is not built.
+
+The application itself calls no AWS API at run time. Everything on a dotted line from an AWS service is done by ECS before or around the process, which is why the same code runs unchanged on a laptop.
+
+### 2.2 Modules inside the process
+
 ```mermaid
 flowchart TB
     subgraph PROC[One Node.js process]
@@ -60,6 +133,118 @@ flowchart TB
 | `src/llm/write-daily-report.js`, `src/report/` | Daily report | See its document |
 
 A POC is switched on by its configuration. Without `OPENROUTER_API_KEY` the form opens empty; without the `REPORT_*` settings the `/daily-report` command answers that it is not configured. The process starts either way.
+
+### 2.3 Interaction patterns
+
+Four patterns cover every interaction the platform has today. A new POC is expected to reuse one of patterns B to D; each POC's document has the same sequences with its own components and error branches.
+
+**Pattern A: start-up.** How a task comes up on AWS. This is the only pattern in which AWS services other than the network take part.
+
+```mermaid
+sequenceDiagram
+    participant E as Amazon ECS (Fargate)
+    participant R as Amazon ECR
+    participant M as AWS Secrets Manager
+    participant P as Platform process
+    participant C as CloudWatch Logs
+    participant S as Slack
+
+    Note over E: The service wants one task. The old task is stopped first
+    E->>R: pull the image, with the execution role
+    R-->>E: image
+    E->>M: read the secret values, with the execution role
+    M-->>E: values
+    E->>P: start the container, secrets as environment variables
+    P->>P: read configuration, build each configured POC
+    P->>S: open a WebSocket with the app token (Socket Mode)
+    S-->>P: connected
+    opt REPORT_TIME is set
+        P->>P: arm the daily timer
+    end
+    P-->>C: log line slack_app_started
+    Note over P,S: From here on Slack sends events over the open connection. Nothing connects in
+```
+
+On the trial this took about 40 seconds from task start to connected.
+
+**Pattern B: request, pre-fill, approve, act.** For an action that cannot be undone. Used by web form automation.
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant S as Slack
+    participant P as Platform process
+    participant L as LLM
+    participant X as External system
+
+    U->>S: slash command with a sentence
+    S->>P: command event
+    P-->>S: acknowledge within 3 seconds, show a loading form
+    P->>L: the sentence, as data
+    L-->>P: suggested field values
+    P->>P: drop malformed values
+    P-->>S: pre-filled form
+    U->>S: review, correct, send the form
+    S->>P: form values
+    P->>P: validate
+    P->>X: prepare the action, stop before the irreversible step
+    X-->>P: what will be committed
+    P-->>S: evidence and Approve / Edit / Cancel, by direct message
+    U->>S: Approve
+    S->>P: button event
+    P->>P: check that the approver is the requester
+    P->>X: commit
+    X-->>P: reference
+    P-->>S: result, by direct message
+```
+
+**Pattern C: request, collect, write, post.** For a read-only summary. Used by the daily report on `/daily-report`.
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant S as Slack
+    participant P as Platform process
+    participant D as Data sources
+    participant L as LLM
+
+    U->>S: slash command
+    S->>P: command event
+    P-->>S: acknowledge, tell the requester it has started
+    P->>D: read (Slack channel history, Jira issues)
+    D-->>P: records
+    P->>P: compute the facts that need arithmetic
+    P->>L: records and facts, as data
+    L-->>P: text
+    P->>P: clean the text
+    P->>S: post to the channel an administrator configured
+    P-->>S: tell the requester where it was posted
+```
+
+**Pattern D: scheduled run.** The same work as pattern C with a timer in place of the user. Used by the daily report when `REPORT_TIME` is set.
+
+```mermaid
+sequenceDiagram
+    participant T as Timer in the process
+    participant P as Platform process
+    participant D as Data sources
+    participant L as LLM
+    participant S as Slack
+
+    T->>P: local time reaches REPORT_TIME
+    P->>D: read
+    D-->>P: records
+    P->>L: records and facts
+    L-->>P: text
+    P->>S: post to the configured channel
+    alt the run fails
+        P->>P: log scheduled_report_failed, nothing is posted
+    end
+    P->>T: arm the timer for the next day
+    Note over T,P: A task that is stopped at that time posts nothing, and nothing catches up
+```
+
+In every pattern the LLM is a leaf: the platform calls it, takes text back, and decides in code what happens next.
 
 ## 3. Integrations
 
@@ -136,16 +321,7 @@ The browser is the reason for the container size (1 vCPU, 2 GB) and for the Play
 
 ### 3.5 AWS
 
-| Service | Use |
-|---|---|
-| ECS Fargate | Runs the one process as a service with exactly one task |
-| Secrets Manager | Holds tokens and passwords; injected as environment variables when the task starts |
-| CloudWatch Logs | Receives stdout |
-| ECR | Holds the image |
-| VPC with NAT Gateway and Elastic IP | The fixed outbound address. Needed only by a POC whose target checks the caller's IP |
-| Amazon Bedrock | Proposed for the LLM |
-
-The application calls no AWS API at run time, so it runs unchanged on a laptop.
+The AWS services, what each one does and which POC needs it are in section 2.1; how they are reached at start-up is pattern A in section 2.3. The commands that create them are in [03-aws-deployment.md](03-aws-deployment.md).
 
 ### 3.6 Confluence (planned)
 

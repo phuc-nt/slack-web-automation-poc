@@ -9,6 +9,7 @@ import { loadConfig } from '../src/config.js';
 import { createLogger } from '../src/core/logger.js';
 import { addDays, displayValue, FIELDS, localToday, validate } from '../src/core/registration-fields.js';
 import { RegistrationService } from '../src/core/registration-service.js';
+import { configuredChat } from '../src/llm/configured-chat.js';
 import { parseFreeTextRequest } from '../src/llm/parse-free-text-request.js';
 import { createMockPortal } from '../src/mock-portal/mock-portal-server.js';
 
@@ -32,11 +33,12 @@ const service = new RegistrationService({
 let exitCode = 0;
 try {
   let registration;
-  if (config.openRouterApiKey) {
-    console.log(`\n1. Asking ${config.openRouterModel} to read: "${text}"`);
-    registration = await parseFreeTextRequest(text, { apiKey: config.openRouterApiKey, model: config.openRouterModel });
+  const chat = configuredChat(config, createLogger());
+  if (chat) {
+    console.log(`\n1. Asking ${config.llmModel} to read: "${text}"`);
+    registration = await parseFreeTextRequest(text, { llm: chat, model: config.llmModel });
   } else {
-    console.log('\n1. OPENROUTER_API_KEY not set; using a fixed sample instead of the LLM.');
+    console.log('\n1. No LLM provider set; using a fixed sample instead of the LLM.');
     registration = {
       visitorType: 'guest', visitorName: 'Tran Thi Mai', visitorCompany: 'Example Trading Co.', companions: 'Pham Van Duc',
       visitDate: addDays(localToday(), 1), startTime: '14:00', endTime: '15:30', building: 'tower-a', floor: '12',

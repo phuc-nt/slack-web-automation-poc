@@ -9,6 +9,12 @@ node_modules/
 *.key
 poc-secrets.json
 
+# The operator's own environment and assistant instructions: not for readers of the repo
+infra/local.env
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+
 # Run output: screenshots and reports contain request data
 artifacts/
 test-results/
@@ -20,4 +26,3 @@ coverage/
 .DS_Store
 .vscode/
 .idea/
-.claude/settings.local.json

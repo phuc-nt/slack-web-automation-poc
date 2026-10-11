@@ -12,7 +12,8 @@ The example in the repository is a three-step visitor registration form on a sim
 |---|---|
 | Full flow: Slack, LLM pre-fill, browser, approval, duplicate check | Verified locally with automated tests that drive a real browser |
 | The same flow on AWS | Run on 2026-10-05 with 5 requests from Slack, in a public subnet. The environment was then deleted |
-| Fixed outbound IP address | **Not run** |
+| The same flow on AWS with the LLM on Amazon Bedrock | Run on 2026-10-11 in a private subnet by a one-off verification task, without Slack: pre-fill, browser, submit |
+| Fixed outbound IP address | Confirmed on 2026-10-11: a task's outbound address equals the Elastic IP. No real web application has checked it |
 | Real web application, single sign-on, CAPTCHA | **Not verified.** Only the mock portal has been used |
 | Several requests waiting at once, recovery after a restart, expiry after 10 minutes on AWS | **Not tried** |
 
@@ -61,7 +62,7 @@ flowchart LR
 flowchart LR
     U[Requester]
     SL[Slack]
-    OR[LLM provider<br/>OpenRouter]
+    OR[LLM provider<br/>Amazon Bedrock or OpenRouter]
     WA[Target web app<br/>accepts registered IPs only]
 
     subgraph AWS[The organisation's AWS environment]
@@ -101,7 +102,7 @@ flowchart LR
     JS -.->|job events| CW
 ```
 
-AWS services in this POC: ECS on Fargate, ECR, Secrets Manager, CloudWatch Logs and an IAM execution role, all run on 2026-10-05; and a VPC with a NAT Gateway and an Elastic IP, which this POC requires for the registered IP address and which has **not been run**. In the trial the mock portal ran as a second container in the same task, in place of the target web app.
+AWS services in this POC: ECS on Fargate, ECR, Secrets Manager, CloudWatch Logs and an IAM execution role, all run on 2026-10-05; and a VPC with a NAT Gateway and an Elastic IP, which this POC requires for the registered IP address, run on 2026-10-11 together with an IAM task role for Amazon Bedrock. In both trials the mock portal ran as a second container in the same task, in place of the target web app.
 
 | Component | Responsibility | In the repo |
 |---|---|---|
@@ -251,7 +252,7 @@ These add to the rules every POC keeps (architecture document, section 5).
 
 ## 6. Switching to the real web application (not run)
 
-The AWS side of the switch is in [03-aws-deployment.md](../03-aws-deployment.md), section 4.
+The AWS side of the switch is in [03-aws-deployment.md](../03-aws-deployment.md), section 8. The agreements to obtain from the web application's owner are in [05-prerequisites-and-access.md](../05-prerequisites-and-access.md), section 7.
 
 ### 6.1 Work outside the code
 
@@ -289,7 +290,7 @@ On AWS, 2026-10-05, 5 requests from Slack to the mock portal:
 | What happens when the web application rejects a request? | The staff member received the web application's own error message |
 | Does it use much capacity? | Peak use was about 10% of the 2 GB allocated |
 
-The full measurements are in [03-aws-deployment.md](../03-aws-deployment.md), section 6. Latency was measured with the mock portal in the same task; against a real web application it will depend mostly on that application.
+The verification record is in [03-aws-deployment.md](../03-aws-deployment.md), section 9. Latency was measured with the mock portal in the same task; against a real web application it will depend mostly on that application.
 
 Locally, `npm test` covers the field rules, the browser flow against the mock portal, the Slack flow with a fake Slack client, and ten free-text requests in English, Vietnamese and Japanese read by the real model.
 

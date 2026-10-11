@@ -1,6 +1,6 @@
 # Slack Automation Platform: Overview
 
-This document is for decision makers. It describes one platform and the proofs of concept (POCs) built on it. The engineering detail is in [02-platform-architecture.md](02-platform-architecture.md) and [03-aws-deployment.md](03-aws-deployment.md); each POC has its own document under [poc/](poc/).
+This document is for decision makers. It describes one platform and the proofs of concept (POCs) built on it. The engineering detail is in [02-platform-architecture.md](02-platform-architecture.md) and [03-aws-deployment.md](03-aws-deployment.md); the cost estimate is in [04-operating-cost.md](04-operating-cost.md) and the access to request beforehand in [05-prerequisites-and-access.md](05-prerequisites-and-access.md); each POC has its own document under [poc/](poc/).
 
 ## 1. Summary
 
@@ -12,8 +12,8 @@ Two POCs have been built:
 
 | POC | What it does | Status |
 |---|---|---|
-| [Web form automation](poc/01-web-form-automation.md) | A staff member asks in Slack with one sentence. The system signs in to a web application that has no API, fills in the form, and submits only after that person approves the confirmation screen | Ran on AWS on 2026-10-05 against a simulated website |
-| [Daily report](poc/02-daily-report.md) | The system reads the day's messages in the project's Slack channels and the project's Jira issues, writes the daily report, and points out where the chat and Jira disagree | Ran from a laptop on 2026-10-06 against a real Slack workspace and a real Jira site. Not yet deployed to AWS |
+| [Web form automation](poc/01-web-form-automation.md) | A staff member asks in Slack with one sentence. The system signs in to a web application that has no API, fills in the form, and submits only after that person approves the confirmation screen | Ran on AWS against a simulated website, with the LLM on Amazon Bedrock |
+| [Daily report](poc/02-daily-report.md) | The system reads the day's messages in the project's Slack channels and the project's Jira issues, writes the daily report, and points out where the chat and Jira disagree | Ran from a laptop and on AWS against a real Slack workspace and a real Jira site, both filled with test data |
 
 Infrastructure cost is estimated at about 82 USD a month for both POCs together, of which about 47 USD exists only because the web application in the first POC requires a fixed IP address.
 
@@ -21,7 +21,7 @@ Infrastructure cost is estimated at about 82 USD a month for both POCs together,
 
 1. Approval to run the web form automation against the real web application. This includes asking its owner for a dedicated account and for one IP address to be registered.
 2. Approval to pilot the daily report on one real project, and a decision on whether project chat may be sent to an AI provider outside AWS for that pilot (section 6).
-3. An owner for the open AWS Support request that blocks the use of AWS's own AI service.
+3. An owner for the access requests listed in [05-prerequisites-and-access.md](05-prerequisites-and-access.md), section 8. Several of them have a long wait and block everything after them.
 
 ## 2. The building blocks
 
@@ -30,7 +30,7 @@ Every POC is assembled from the same five blocks. A new use case adds its own lo
 | Block | Role in the platform | Today | Planned or open |
 |---|---|---|---|
 | Slack | Where staff ask, approve and read results | One Slack app that connects out to Slack; nothing is exposed to the internet | A list of who may use each command |
-| LLM | Reads free text and writes summaries. It never takes an action | An outside provider, OpenRouter | Amazon Bedrock, inside AWS. Blocked at account level on both AWS accounts tried |
+| LLM | Reads free text and writes summaries. It never takes an action | An outside provider, OpenRouter | Amazon Bedrock, inside AWS. Run on 2026-10-11 with the model GLM 4.7 Flash |
 | Jira | The record of tasks, owners and due dates | Read-only, with one query per report | Writing back, for example a comment on an issue the report flags |
 | Web applications without an API | Systems that can only be used through their screens | A browser driven by a fixed script | One script per web application |
 | AWS | Where the system runs, where secrets are kept, and the fixed IP address | Container service, secret store, logs | Private network with a fixed exit; durable state |
@@ -44,14 +44,14 @@ flowchart LR
         P[Platform<br/>one small application]
         K[Secret store]
         N[Internet exit<br/>one fixed IP address]
-        B[LLM inside AWS<br/>Amazon Bedrock, proposed]
+        B[LLM inside AWS<br/>Amazon Bedrock]
         P -.-> K
         P -.-> B
         P --> N
     end
     N --> W[Web application<br/>accepts registered IPs only]
     N --> J[Jira]
-    N --> O[LLM outside AWS<br/>OpenRouter, today]
+    N --> O[LLM outside AWS<br/>OpenRouter, the other option]
     N -.-> C[Confluence<br/>planned]
 ```
 
@@ -96,10 +96,10 @@ In plain terms:
 
 Not yet verified:
 
-- **The fixed IP address** and **the real web application**, for the first POC.
-- **The daily report on AWS**, its command in Slack, and its daily schedule. The report was produced by running it by hand.
+- **The real web application**, for the first POC. The fixed IP address was built and confirmed on 2026-10-11, but no web application has checked it yet.
+- **The daily schedule over several days.** On AWS the report was posted by the command in Slack and once by the schedule, on 2026-10-11.
 - **Real project data.** The chat and the issues were written for the test. Quality on a real, messier project is unknown.
-- **AI on AWS.** Amazon Bedrock refused every test call on the two AWS accounts tried, including after one was upgraded to a paid plan. AWS states this needs a request to AWS Support.
+- **Whether the AI model on AWS is good enough.** The model tried on Amazon Bedrock, GLM 4.7 Flash, wrote the report correctly but got 3 of 10 test sentences for the web form partly wrong, where the outside model got none wrong. The person still reviews and approves every form.
 - **Several people using it at once**, and recovery after the system stops unexpectedly.
 
 ## 5. Why these services
@@ -129,11 +129,11 @@ The two POCs send different amounts of text to the LLM, and that changes how muc
 | Web form automation | One sentence describing one request | Yes. Staff then fill in the form themselves |
 | Daily report | A full day of project chat and the project's task list | No. Writing the report is the LLM's job |
 
-With the outside provider used in the trials, a full day of project conversation leaves the organisation every day. This is acceptable for invented test data. For a real project it needs either a decision that it is acceptable, or Amazon Bedrock, which is still blocked.
+With the outside provider used in the trials, a full day of project conversation leaves the organisation every day. This is acceptable for invented test data. For a real project it needs either a decision that it is acceptable, or Amazon Bedrock, which now works and keeps the text inside AWS.
 
 ## 7. Cost
 
-Estimated at AWS list prices in the Sydney region, running all month:
+Estimated at AWS list prices of one example Region, running all month. The full estimate, with the formula to redo it for another Region, model or volume, is in [04-operating-cost.md](04-operating-cost.md).
 
 | Item | USD per month | Needed by |
 |---|---|---|
@@ -144,8 +144,8 @@ Estimated at AWS list prices in the Sydney region, running all month:
 | **Total** | **about 82** | |
 
 - The daily report adds no AWS resource: it runs in the same application. On its own, without the fixed IP address, the platform would cost about 35 USD a month.
-- LLM use is charged per request. For the web form it is an estimated 0.1 USD per thousand requests with the proposed Bedrock model. For the daily report the cost per report has not been measured; it is one request a day per project, larger than a form request.
-- Prices differ by region. The figures exclude Slack and Jira fees and engineering time.
+- LLM use is charged per request. Measured on Amazon Bedrock with GLM 4.7 Flash: about 0.09 USD per thousand web form requests and about 0.0005 USD per daily report. At 500 requests and 22 reports a month that is about 0.05 USD.
+- Prices differ by Region. The figures exclude Slack and Jira fees and engineering time.
 
 ## 8. Risks and limits
 
@@ -153,7 +153,7 @@ Risks shared by every POC:
 
 | Risk | Impact | How it is handled |
 |---|---|---|
-| Text is sent to an AI provider outside the organisation | Requests, and for the daily report a full day of chat and tasks, reach a third party | Move to Amazon Bedrock. Until then, limit pilots to data the organisation is willing to send |
+| Text is sent to an AI provider outside the organisation | Requests, and for the daily report a full day of chat and tasks, reach a third party | Use Amazon Bedrock, which is a configuration setting. With the outside provider, limit pilots to data the organisation is willing to send |
 | The LLM gets something wrong | A wrongly pre-filled field, or a report that misstates progress | A person checks the form before anything is submitted. Every report says it was written by an LLM. Facts that need counting or dates, such as "overdue", are worked out by the software, not the LLM |
 | The system restarts | Requests waiting for approval are lost; a report scheduled for that moment is not posted | Accepted for the trials; the production version needs durable state and a schedule outside the application |
 | One access key reads more than intended | The Jira key carries all permissions of the account it belongs to | Use a dedicated account that can only read the projects in the report |
@@ -164,8 +164,9 @@ Risks specific to one POC, such as a web application changing its screens, are i
 ## 9. Next steps
 
 1. **Leadership decisions:** the three in section 1, and a named owner for operating the platform.
-2. **AWS:** open the support request for Amazon Bedrock; build the private network with a fixed IP following [03-aws-deployment.md](03-aws-deployment.md).
-3. **Web form automation:** obtain the web application owner's approval, a dedicated account and the IP registration; write the form-filling logic for the real web application.
-4. **Daily report:** extend the instructions to cover the three missed cases, deploy it to AWS, and pilot it on one real project with the project lead checking each report against their own.
-5. **Before wider use:** a list of permitted users, an audit record, and alerts when errors rise.
+2. **Access:** send the requests in [05-prerequisites-and-access.md](05-prerequisites-and-access.md), section 8, longest wait first.
+3. **AWS:** start the environment with the scripts in [03-aws-deployment.md](03-aws-deployment.md), section 4, and give the fixed IP address to the web application's owner; choose the Bedrock model after comparing a second one on the test sentences.
+4. **Web form automation:** obtain the web application owner's approval, a dedicated account and the IP registration; write the form-filling logic for the real web application.
+5. **Daily report:** extend the instructions to cover the three missed cases, and pilot it on one real project with the project lead checking each report against their own.
+6. **Before wider use:** a list of permitted users, an audit record, and alerts when errors rise.
 6. **Next block:** Confluence, once a use case is chosen for it.

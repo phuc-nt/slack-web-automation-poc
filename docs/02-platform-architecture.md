@@ -2,7 +2,7 @@
 
 This document continues from [01-platform-overview.md](01-platform-overview.md) and assumes you have read it. It is for the engineer who maintains the platform or adds a POC to it: what is shared, how each outside system is connected, the rules every POC keeps, and where a new POC plugs in.
 
-Each POC's own design is in its document: [web form automation](poc/01-web-form-automation.md) and [daily report](poc/02-daily-report.md). The AWS setup is in [03-aws-deployment.md](03-aws-deployment.md). How to run the repository locally is in the [README](../README.md).
+Each POC's own design is in its document: [web form automation](poc/01-web-form-automation.md) and [daily report](poc/02-daily-report.md). The AWS setup is in [03-aws-deployment.md](03-aws-deployment.md). What to request before reproducing any of it is in [05-prerequisites-and-access.md](05-prerequisites-and-access.md), and the running cost in [04-operating-cost.md](04-operating-cost.md). How to run the repository locally is in the [README](../README.md).
 
 ## 1. What exists and what does not
 
@@ -10,11 +10,11 @@ Each POC's own design is in its document: [web form automation](poc/01-web-form-
 |---|---|
 | Slack connection, shared by both POCs | Built. Run locally and on AWS |
 | LLM through OpenRouter, shared by both POCs | Built. Run locally and on AWS |
-| LLM through Amazon Bedrock | **Not built.** Test calls were refused at account level; see [03-aws-deployment.md](03-aws-deployment.md), section 8 |
+| LLM through Amazon Bedrock, shared by both POCs | Built. Run locally and on AWS on 2026-10-11 with `zai.glm-4.7-flash`; see [03-aws-deployment.md](03-aws-deployment.md), section 9 |
 | Jira Cloud, read-only | Built. Run against a real site on 2026-10-06, from a laptop |
 | Jira Cloud, writing | **Not built** |
 | Browser automation | Built. Run against the mock portal only |
-| AWS runtime | Run on 2026-10-05 for the first POC, then deleted. The daily report has not run on AWS |
+| AWS runtime | Run on 2026-10-05 for the first POC, then deleted. Run again on 2026-10-11 from the templates in `infra/`, with both POCs, the private network and the fixed IP |
 | Confluence | **Not built.** Section 3.6 lists what is known and what has to be decided |
 
 The repository grew from the first POC, and some names still show it: the Slack app is called "Visitor Registration POC", and one file registers the handlers of both POCs. Section 6 says where that matters.
@@ -33,7 +33,7 @@ flowchart LR
 
     subgraph EXT[Outside AWS]
         SL[Slack]
-        OR[LLM provider<br/>OpenRouter]
+        OR[LLM provider<br/>OpenRouter, optional]
         JI[Jira Cloud]
         WA[Target web app<br/>accepts registered IPs only]
         CF[Confluence<br/>planned]
@@ -44,7 +44,7 @@ flowchart LR
         SM[AWS Secrets Manager<br/>tokens and passwords]
         IAM[IAM execution role]
         CW[Amazon CloudWatch Logs]
-        BR[Amazon Bedrock<br/>proposed]
+        BR[Amazon Bedrock]
         subgraph VPC[Amazon VPC, one Availability Zone]
             subgraph PRI[Private subnet]
                 subgraph ECS[Amazon ECS on AWS Fargate: one service, one task]
@@ -74,21 +74,21 @@ flowchart LR
     SM -.->|secrets as environment variables at task start| APP
     IAM -.->|lets ECS pull the image, read the secret, write logs| ECS
     APP -.->|stdout| CW
-    APP -.->|Converse, proposed| BR
+    APP -->|Converse, through NAT| BR
 ```
 
 Which AWS service takes part, and for which POC:
 
 | AWS service | Role | Web form automation | Daily report | Status |
 |---|---|---|---|---|
-| Amazon ECS on AWS Fargate | Runs the one process as a service with exactly one task (1 vCPU, 2 GB, `ARM64`) | Yes | Yes | Run on 2026-10-05 for the web form POC |
+| Amazon ECS on AWS Fargate | Runs the one process as a service with exactly one task (1 vCPU, 2 GB, `ARM64`) | Yes | Yes | Run on 2026-10-05 for the web form POC; on 2026-10-11 for both |
 | Amazon ECR | Holds the container image | Yes | Yes | Run |
-| AWS Secrets Manager | Holds Slack tokens, the LLM key, the web app password, the Atlassian token. ECS injects them as environment variables when the task starts | Yes | Yes | Run, without the Atlassian token |
+| AWS Secrets Manager | Holds Slack tokens, the LLM key, the web app password, the Atlassian token. ECS injects them as environment variables when the task starts | Yes | Yes | Run; with the Atlassian token and without an LLM key on 2026-10-11 |
 | IAM execution role | Used by ECS itself, not by the application: pull the image, read the secret, write logs | Yes | Yes | Run |
 | Amazon CloudWatch Logs | Receives the process's stdout, kept 7 days | Yes | Yes | Run |
-| Amazon VPC: private and public subnet, Internet Gateway | A network of the platform's own, with no inbound rule | Yes | Not required | **Not run.** The trial used the default VPC and a public subnet |
-| NAT Gateway with an Elastic IP | The one fixed outbound address | Yes: the web app checks the caller's IP | Not required: Slack, Jira and the LLM do not check it | **Not run** |
-| Amazon Bedrock, with an IAM task role | The LLM inside AWS | Proposed | Proposed | **Not built**; see section 3.2 |
+| Amazon VPC: private and public subnet, Internet Gateway | A network of the platform's own, with no inbound rule | Yes | Not required | Run on 2026-10-11 |
+| NAT Gateway with an Elastic IP | The one fixed outbound address | Yes: the web app checks the caller's IP | Not required: Slack, Jira and the LLM do not check it | Run on 2026-10-11; the outbound address equals the Elastic IP |
+| Amazon Bedrock, with an IAM task role | The LLM inside AWS | Yes, when `LLM_PROVIDER=bedrock` | Yes, when `LLM_PROVIDER=bedrock` | Run on 2026-10-11; see section 3.2 |
 
 No load balancer, API Gateway, Lambda, queue or database takes part: Socket Mode removes the inbound side, and state is held in memory. An EventBridge Scheduler rule for the report's schedule has been named as a production option and is not built.
 
@@ -106,7 +106,7 @@ flowchart TB
             P2[Daily report<br/>src/report/]
         end
         subgraph SHARED[Shared]
-            L[LLM client<br/>src/llm/openrouter-chat.js]
+            L[LLM client<br/>src/llm/configured-chat.js]
             C[Config, logger, secret store<br/>src/config.js, src/core/]
         end
         E --> P1
@@ -126,13 +126,14 @@ flowchart TB
 | `src/config.js` | Shared | The only place that reads environment variables |
 | `src/core/logger.js` | Shared | One JSON line per event to stdout |
 | `src/core/secret-store.js` | Shared interface, one method so far | Sign-in credentials for the target web app |
-| `src/llm/openrouter-chat.js` | Shared | One chat-completion call: messages in, text out |
+| `src/llm/configured-chat.js` | Shared | Picks the provider from configuration and returns one function: messages in, text out |
+| `src/llm/openrouter-chat.js`, `src/llm/bedrock-chat.js` | Shared | The call to each provider |
 | `src/slack/start-slack-app.js` | Shared | Builds every POC's service from the configuration and starts the app |
 | `src/slack/slack-handlers.js` | Shared file, per-POC handlers | Slash commands, modal, buttons |
 | `src/llm/parse-free-text-request.js`, `src/core/registration-*.js`, `src/worker/`, `src/slack/registration-modal.js`, `src/mock-portal/` | Web form automation | See its document |
 | `src/llm/write-daily-report.js`, `src/report/` | Daily report | See its document |
 
-A POC is switched on by its configuration. Without `OPENROUTER_API_KEY` the form opens empty; without the `REPORT_*` settings the `/daily-report` command answers that it is not configured. The process starts either way.
+A POC is switched on by its configuration. Without an LLM provider (`OPENROUTER_API_KEY`, or `LLM_PROVIDER=bedrock`) the form opens empty; without the `REPORT_*` settings the `/daily-report` command answers that it is not configured. The process starts either way.
 
 ### 2.3 Interaction patterns
 
@@ -279,20 +280,22 @@ Both POCs call one function:
 chatCompletion({ apiKey, model, messages, timeoutMs, fetchImpl })   // returns the answer as text
 ```
 
-It posts to OpenRouter's chat-completions endpoint with `temperature: 0` and throws on a missing key, an HTTP error or an empty answer. Each caller owns its prompt and decides what to do with the text.
+`configuredChat` returns that function for the provider named by `LLM_PROVIDER`. For OpenRouter it posts to the chat-completions endpoint; for Bedrock it calls `Converse` with the credentials of the task role. Both use `temperature: 0` and throw on an HTTP error or an empty answer. Each caller owns its prompt and decides what to do with the text.
 
 | Setting | Meaning |
 |---|---|
-| `OPENROUTER_API_KEY` | Switches the LLM on |
+| `LLM_PROVIDER` | `openrouter` (default) or `bedrock` |
+| `OPENROUTER_API_KEY` | Switches the LLM on with OpenRouter |
 | `OPENROUTER_MODEL` | Model for the form pre-fill, and the default for everything else. Default `deepseek/deepseek-v4.1-flash` |
+| `BEDROCK_MODEL`, `BEDROCK_REGION` | The same with Bedrock. Defaults `zai.glm-4.7-flash` and the Region of the task |
 | `REPORT_MODEL` | Model for the daily report, when it should differ |
 
 Where the LLM runs is decided in this one file:
 
 | Placement | State | What changes |
 |---|---|---|
-| Outside AWS: OpenRouter | In use | Nothing |
-| Inside AWS: Amazon Bedrock with a task role | Proposed, not built | The body of `chatCompletion` calls `Converse`; the key is replaced by an IAM role. Steps in [03-aws-deployment.md](03-aws-deployment.md), section 8 |
+| Outside AWS: OpenRouter | Built; the default on a laptop | Nothing |
+| Inside AWS: Amazon Bedrock with a task role | Built; what the templates in `infra/` deploy | `LLM_PROVIDER=bedrock`; no key, an IAM role instead. Results in [03-aws-deployment.md](03-aws-deployment.md), sections 7 and 9 |
 | Inside AWS: Bedrock's OpenAI-compatible endpoint | Not tried | The endpoint URL and the model ID; a Bedrock API key is still stored |
 
 The provider is not yet selectable by configuration: switching means editing the function.
@@ -321,7 +324,7 @@ The browser is the reason for the container size (1 vCPU, 2 GB) and for the Play
 
 ### 3.5 AWS
 
-The AWS services, what each one does and which POC needs it are in section 2.1; how they are reached at start-up is pattern A in section 2.3. The commands that create them are in [03-aws-deployment.md](03-aws-deployment.md).
+The AWS services, what each one does and which POC needs it are in section 2.1; how they are reached at start-up is pattern A in section 2.3. The templates and the script that create them are in [03-aws-deployment.md](03-aws-deployment.md); the permissions the deployer needs are in [05-prerequisites-and-access.md](05-prerequisites-and-access.md), section 6.
 
 ### 3.6 Confluence (planned)
 
@@ -329,6 +332,8 @@ Nothing is built. What is known:
 
 - Confluence Cloud on the same Atlassian site accepts the same email and API token as Jira, so no new kind of credential is needed. The warning in 3.3 about the token's reach applies here in full.
 - Two uses have been named: publishing a report as a page, and reading project pages as context for the LLM.
+
+The access it will need is in [05-prerequisites-and-access.md](05-prerequisites-and-access.md), section 4.
 
 To be decided before building: which of the two comes first; which space the platform may write to; and, for reading, how much page text may be sent to the LLM and through which provider.
 
@@ -341,7 +346,7 @@ All settings are environment variables, read once in `src/config.js`. `.env.exam
 | Group | Variables | Secret |
 |---|---|---|
 | Slack | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` | Yes |
-| LLM | `OPENROUTER_API_KEY`; `OPENROUTER_MODEL`, `REPORT_MODEL` | The key |
+| LLM | `LLM_PROVIDER`; `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`; `BEDROCK_MODEL`, `BEDROCK_REGION`; `REPORT_MODEL` | The OpenRouter key. Bedrock has none |
 | Web form automation | `PORTAL_BASE_URL`, `PORTAL_USERNAME`, `PORTAL_PASSWORD`, `APPROVAL_TTL_SECONDS`, `BROWSER_HEADLESS` | Username and password |
 | Daily report | `REPORT_CHANNELS`, `REPORT_POST_CHANNEL`, `REPORT_TIME`, `REPORT_LANGUAGE` | No |
 | Jira | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_JQL` | Email and token |
@@ -390,7 +395,7 @@ What is not yet modular, and will need attention as POCs are added:
 
 ## 7. Tests and test data
 
-`npm test` runs 42 tests. Eleven of them call the real model and run only when `OPENROUTER_API_KEY` is set: ten sentences for the form pre-fill and one sample day for the report. The rest use a real browser against the mock portal, or fakes for Slack and Jira.
+`npm test` runs 44 tests. Eleven of them call the real model and run only when an LLM provider is configured: ten sentences for the form pre-fill and one sample day for the report. The rest use a real browser against the mock portal, or fakes for Slack and Jira.
 
 | Data | File | Used by |
 |---|---|---|
@@ -410,10 +415,9 @@ Gaps of the platform as a whole. Each POC's document lists its own.
 | Who may use it | Anyone in the workspace can run any command | A list of permitted people or groups per command |
 | Audit | JSON log to stdout, kept 7 days | A record of who asked for what, and when |
 | Monitoring | None | An alert on error rate and on a missed scheduled run |
-| LLM provider | Outside AWS, fixed in code | Bedrock, selectable by configuration |
+| LLM provider | OpenRouter or Bedrock, by configuration. The Bedrock model tried fails 3 of the 10 pre-fill sentences | A Bedrock model that passes all of them, or prompts tuned for it |
 | Atlassian credentials | A personal account's token in the trial | A dedicated account with read access to named projects only |
 | Slack scopes | Include a test-only scope | Remove `chat:write.customize` |
 | State and schedule | In the memory of one process | Durable state; a schedule outside the process |
-| Outbound rules | The security group allows every port | TCP 443 only |
-| Infrastructure as code | The commands in the deployment document | A template once the configuration settles |
+| Infrastructure as code | Two CloudFormation templates and a script, run by hand from a workstation | Deployment from a pipeline, with review of each change |
 | Secret rotation | Manual | A schedule for the Slack tokens, the LLM key, the Atlassian token and the web app password |

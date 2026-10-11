@@ -17,6 +17,7 @@
     "test": "node --env-file-if-exists=.env --test --test-concurrency=1 \"test/*.test.js\""
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1149.0",
     "@slack/bolt": "^5.1.0",
     "playwright": "^1.63.0"
   }

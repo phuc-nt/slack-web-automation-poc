@@ -1,6 +1,6 @@
 // The daily report from a terminal. Prints the report; posts it only with --post.
 //
-//   npm run report -- --sample            (invented project day; needs only OPENROUTER_API_KEY)
+//   npm run report -- --sample            (invented project day; needs only an LLM provider)
 //   npm run report                        (today, from the configured channels and Jira)
 //   npm run report -- 2026-10-05          (another day)
 //   npm run report -- --post              (also post to REPORT_POST_CHANNEL)
@@ -22,9 +22,14 @@ if (args.includes('--sample')) {
   // Loaded on demand: the container image ships without test/.
   const { SAMPLE_CHANNELS, SAMPLE_DATE, SAMPLE_ISSUES } = await import('../test/fixtures/daily-report-sample.js');
   reportDate = SAMPLE_DATE;
+  const writeReport = reportWriter(config, logger);
+  if (!writeReport) {
+    console.error('Set an LLM provider: OPENROUTER_API_KEY, or LLM_PROVIDER=bedrock.');
+    process.exit(1);
+  }
   reporter = createDailyReporter({
     channels: [],
-    writeReport: reportWriter(config),
+    writeReport,
     fetchMessages: async () => SAMPLE_CHANNELS,
     fetchIssues: async () => SAMPLE_ISSUES,
     logger,
@@ -37,7 +42,7 @@ if (args.includes('--sample')) {
   const app = new bolt.App({ token: config.slackBotToken, appToken: config.slackAppToken, socketMode: true });
   reporter = configuredReporter(config, app.client, logger);
   if (!reporter) {
-    console.error('Set REPORT_CHANNELS, REPORT_POST_CHANNEL and OPENROUTER_API_KEY, or use --sample.');
+    console.error('Set REPORT_CHANNELS, REPORT_POST_CHANNEL and an LLM provider (OPENROUTER_API_KEY or LLM_PROVIDER=bedrock), or use --sample.');
     process.exit(1);
   }
 }

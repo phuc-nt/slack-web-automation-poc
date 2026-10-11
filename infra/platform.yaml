@@ -1,0 +1,381 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Slack automation platform POC, platform layer: one Fargate task (Slack app + mock
+  portal) in its own VPC, calling Amazon Bedrock through a task role - everything
+  that costs money per hour lives here so deleting this stack stops the bill, and the
+  NetworkProfile parameter picks between a fixed outbound IP (NAT) and the cheapest setup.
+
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  com.aws.cloudformation.Context:
+    arch: Slack Socket Mode (outbound only) -> 1 Fargate task -> Bedrock, Jira, web app; no inbound path
+    must:
+      - exactly one running task per Slack app token, or events are split between processes
+      - all resources stay in the stack's Region; the Bedrock model is invoked in-Region
+    ref:
+      - at: docs/03-aws-deployment.md
+        has: deployment guide, cleanup (cost in docs/04-operating-cost.md)
+        scope: shared
+
+Parameters:
+  NetworkProfile:
+    Type: String
+    Default: private-nat
+    AllowedValues: [private-nat, public]
+    Description: >-
+      private-nat = task in a private subnet behind a NAT Gateway with an Elastic IP (fixed outbound IP).
+      public = task in a public subnet with its own public IP (no NAT, outbound IP changes per task).
+  ImageUri:
+    Type: String
+  SecretArn:
+    Type: String
+  DesiredCount:
+    Type: Number
+    Default: 1
+    AllowedValues: [0, 1]
+  Cpu:
+    Type: String
+    Default: '1024'
+  Memory:
+    Type: String
+    Default: '2048'
+  BedrockModel:
+    Type: String
+    Default: zai.glm-4.7-flash
+  TimeZone:
+    Type: String
+    Default: UTC
+  ReportChannels:
+    Type: String
+    Default: ''
+  ReportPostChannel:
+    Type: String
+    Default: ''
+  ReportTime:
+    Type: String
+    Default: ''
+  ReportLanguage:
+    Type: String
+    Default: Vietnamese
+  JiraBaseUrl:
+    Type: String
+    Default: ''
+  JiraProjectKey:
+    Type: String
+    Default: ''
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+
+Conditions:
+  UseNat: !Equals [!Ref NetworkProfile, private-nat]
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Ref AWS::StackName }
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Ref AWS::StackName }
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - { Key: Name, Value: !Sub '${AWS::StackName}-public' }
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub '${AWS::StackName}-public' }
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Condition: UseNat
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.20.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - { Key: Name, Value: !Sub '${AWS::StackName}-private' }
+
+  EgressIp:
+    Type: AWS::EC2::EIP
+    Condition: UseNat
+    DependsOn: InternetGatewayAttachment
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: the one outbound address the web app owner puts on their allowlist
+        must:
+          - released on stack delete, so an allowlist entry made for it is void afterwards
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Name, Value: !Ref AWS::StackName }
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: UseNat
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: single NAT in one AZ; the POC accepts an AZ outage. Billed per hour even with no task running
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      AllocationId: !GetAtt EgressIp.AllocationId
+      Tags:
+        - { Key: Name, Value: !Ref AWS::StackName }
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Condition: UseNat
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub '${AWS::StackName}-private' }
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Condition: UseNat
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: UseNat
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Socket Mode dials out, so nothing needs to reach the task
+        must:
+          - no ingress rule
+    Properties:
+      GroupDescription: Slack automation POC task - outbound HTTPS only, no inbound
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS to Slack, Bedrock, Jira, ECR, Secrets Manager, CloudWatch Logs
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: used by ECS to pull the image, write logs and inject the secret; the app itself never holds it
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { 'aws:SourceAccount': !Ref AWS::AccountId }
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+      Policies:
+        - PolicyName: read-app-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SecretArn
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: the app's only AWS permission - invoke the one configured Bedrock model in this Region
+        must:
+          - keep scoped to the model ARN; no bedrock:* and no other service
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { 'aws:SourceAccount': !Ref AWS::AccountId }
+      Policies:
+        - PolicyName: invoke-bedrock-model
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModel}'
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref AWS::StackName
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: mock portal runs beside the app and is reached on localhost; replace it with the real web app's URL when there is one
+        must:
+          - image is built for ARM64
+          - TZ set to the users' time zone - "tomorrow" and the report day are computed on the container clock
+    Properties:
+      Family: !Ref AWS::StackName
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: portal
+          Image: !Ref ImageUri
+          Essential: true
+          Command: [node, src/mock-portal/start-mock-portal.js]
+          Environment:
+            - { Name: MOCK_PORTAL_PORT, Value: '4010' }
+          Secrets:
+            - { Name: PORTAL_USERNAME, ValueFrom: !Sub '${SecretArn}:PORTAL_USERNAME::' }
+            - { Name: PORTAL_PASSWORD, ValueFrom: !Sub '${SecretArn}:PORTAL_PASSWORD::' }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: portal
+        - Name: slack-app
+          Image: !Ref ImageUri
+          Essential: true
+          DependsOn:
+            - { ContainerName: portal, Condition: START }
+          Environment:
+            - { Name: PORTAL_BASE_URL, Value: 'http://127.0.0.1:4010' }
+            - { Name: TZ, Value: !Ref TimeZone }
+            - { Name: LLM_PROVIDER, Value: bedrock }
+            - { Name: BEDROCK_MODEL, Value: !Ref BedrockModel }
+            - { Name: BEDROCK_REGION, Value: !Ref AWS::Region }
+            - { Name: REPORT_CHANNELS, Value: !Ref ReportChannels }
+            - { Name: REPORT_POST_CHANNEL, Value: !Ref ReportPostChannel }
+            - { Name: REPORT_TIME, Value: !Ref ReportTime }
+            - { Name: REPORT_LANGUAGE, Value: !Ref ReportLanguage }
+            - { Name: JIRA_BASE_URL, Value: !Ref JiraBaseUrl }
+            - { Name: JIRA_PROJECT_KEY, Value: !Ref JiraProjectKey }
+          Secrets:
+            - { Name: SLACK_BOT_TOKEN, ValueFrom: !Sub '${SecretArn}:SLACK_BOT_TOKEN::' }
+            - { Name: SLACK_APP_TOKEN, ValueFrom: !Sub '${SecretArn}:SLACK_APP_TOKEN::' }
+            - { Name: PORTAL_USERNAME, ValueFrom: !Sub '${SecretArn}:PORTAL_USERNAME::' }
+            - { Name: PORTAL_PASSWORD, ValueFrom: !Sub '${SecretArn}:PORTAL_PASSWORD::' }
+            - { Name: JIRA_EMAIL, ValueFrom: !Sub '${SecretArn}:JIRA_EMAIL::' }
+            - { Name: JIRA_API_TOKEN, ValueFrom: !Sub '${SecretArn}:JIRA_API_TOKEN::' }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: slack
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: PublicSubnetRouteTableAssociation
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: stops the old task before starting the new one, so a deployment never has two Slack connections; the circuit breaker fails the stack fast when the task cannot start
+        must:
+          - MaximumPercent stays 100 and DesiredCount at most 1
+    Properties:
+      ServiceName: !Ref AWS::StackName
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      PropagateTags: SERVICE
+      Tags:
+        # Doubles as the dependency on the task subnet's default route: DependsOn cannot name
+        # a conditional resource, and a task started before the route exists cannot pull its image.
+        # A route's Ref is "<route table>|<destination>"; "|" is not allowed in a tag value.
+        - Key: EgressRoute
+          Value: !Select [0, !Split ['|', !If [UseNat, !Ref PrivateRoute, !Ref PublicRoute]]]
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: false
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: !If [UseNat, DISABLED, ENABLED]
+          SecurityGroups: [!Ref TaskSecurityGroup]
+          Subnets:
+            - !If [UseNat, !Ref PrivateSubnet, !Ref PublicSubnet]
+
+Outputs:
+  NetworkProfile:
+    Value: !Ref NetworkProfile
+  EgressIp:
+    Condition: UseNat
+    Description: Fixed outbound IP - the address to put on the web app's allowlist
+    Value: !Ref EgressIp
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !GetAtt Service.Name
+  TaskDefinitionArn:
+    Value: !Ref TaskDefinition
+  TaskSubnet:
+    Value: !If [UseNat, !Ref PrivateSubnet, !Ref PublicSubnet]
+  TaskSecurityGroup:
+    Value: !Ref TaskSecurityGroup
+  LogGroupName:
+    Value: !Ref LogGroup

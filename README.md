@@ -11,14 +11,16 @@ Tất cả bằng tiếng Anh. Đọc theo thứ tự:
 
 1. [docs/01-platform-overview.md](docs/01-platform-overview.md): nền tảng gồm những khối nào (Slack, LLM, Jira, web app, AWS, Confluence trong tương lai), đã kiểm chứng được gì, lý do chọn dịch vụ, chi phí, rủi ro. Cho người ra quyết định.
 2. [docs/02-platform-architecture.md](docs/02-platform-architecture.md): phần dùng chung, cách nối từng hệ thống bên ngoài, quy tắc mọi POC phải giữ, các bước thêm một POC mới. Cho kỹ sư.
-3. [docs/03-aws-deployment.md](docs/03-aws-deployment.md): hạ tầng AWS, lệnh dựng từng bước, số đo, vận hành, chuyển LLM sang Amazon Bedrock.
+3. [docs/03-aws-deployment.md](docs/03-aws-deployment.md): dựng, kiểm chứng, vận hành và dọn môi trường AWS bằng template và script trong `infra/`; LLM trên Amazon Bedrock; kết quả kiểm chứng; xử lý sự cố. Cho kỹ sư triển khai.
+4. [docs/04-operating-cost.md](docs/04-operating-cost.md): ước tính chi phí vận hành hằng tháng, từng khoản, và công thức để tính lại cho Region, model hay khối lượng khác.
+5. [docs/05-prerequisites-and-access.md](docs/05-prerequisites-and-access.md): mọi công cụ, dịch vụ và tính năng cần dùng, kèm quyền phải xin và thứ phải đăng ký trước, theo từng giai đoạn tái hiện. Đọc trước khi bắt đầu.
 
 Mỗi POC có tài liệu riêng:
 
 - [docs/poc/01-web-form-automation.md](docs/poc/01-web-form-automation.md)
 - [docs/poc/02-daily-report.md](docs/poc/02-daily-report.md)
 
-README này chỉ nói cách chạy trên máy cá nhân.
+README này chỉ nói cách chạy; mọi giá trị riêng của từng môi trường (token, kênh, site Jira, AWS profile, Region) nằm trong `.env` và `infra/local.env`, cả hai đều không được commit.
 
 ## Chạy ở local
 
@@ -33,12 +35,12 @@ cp .env.example .env        # điền PORTAL_PASSWORD bất kỳ; các mục kh�
 Không cần Slack:
 
 ```bash
-npm test                    # 42 test; phần form chạy browser thật trên mock portal
+npm test                    # 44 test; phần form chạy browser thật trên mock portal
 npm run demo                # cả luồng trong terminal, hỏi trước khi gửi
 npm run demo -- --yes "Register guest Mr. Pham for tomorrow 9:00-10:00 to meet Ms. Vu at Tower B floor 3, purpose: site survey"
 ```
 
-Đặt `BROWSER_HEADLESS=false` để nhìn browser tự điền form. Có `OPENROUTER_API_KEY` thì 11 trong số 42 test gọi model thật; không có thì app vẫn chạy và form mở trống.
+Đặt `BROWSER_HEADLESS=false` để nhìn browser tự điền form. Có LLM thì 11 trong số 44 test gọi model thật; không có thì app vẫn chạy và form mở trống. LLM chọn bằng `LLM_PROVIDER`: `openrouter` (mặc định, cần `OPENROUTER_API_KEY`) hoặc `bedrock` (Amazon Bedrock, mặc định model `zai.glm-4.7-flash`, dùng credential AWS sẵn có như `AWS_PROFILE`, không cần key).
 
 Với một Slack workspace thật (Socket Mode, không cần URL công khai):
 
@@ -64,7 +66,7 @@ Gửi cùng một khách hai lần trùng giờ và duyệt cả hai để thấ
 
 POC thứ hai, không dùng browser: đọc tin nhắn trong ngày của các kênh dự án, đọc issue trên Jira, nhờ LLM viết báo cáo ngày kèm phần đối chiếu tiến độ (issue quá hạn, việc chat nói đã xong nhưng Jira chưa đóng, issue sắp tới hạn mà không ai nhắc tới), rồi đăng vào một kênh cố định.
 
-Thử ngay với dữ liệu mẫu, chỉ cần `OPENROUTER_API_KEY`:
+Thử ngay với dữ liệu mẫu, chỉ cần một LLM (`OPENROUTER_API_KEY` hoặc `LLM_PROVIDER=bedrock`):
 
 ```bash
 npm run report -- --sample
@@ -87,7 +89,29 @@ npm run report                           # in báo cáo ra terminal
 
 Bỏ `--post` thì hai lệnh seed chỉ in ra những gì sẽ tạo. Mỗi issue mẫu là một tình huống báo cáo cần xử lý; bảng tình huống và kết quả nằm trong [docs/poc/02-daily-report.md](docs/poc/02-daily-report.md), mục 7. Lệnh seed vào kênh cần scope `chat:write.customize` (đã có trong manifest).
 
-Báo cáo luôn được đăng vào `REPORT_POST_CHANNEL`, không gửi riêng cho người gõ lệnh. Nội dung chat và issue được gửi tới OpenRouter để viết báo cáo. Trả lời trong một thread cũ (mở từ ngày trước) không được đọc.
+Báo cáo luôn được đăng vào `REPORT_POST_CHANNEL`, không gửi riêng cho người gõ lệnh. Nội dung chat và issue được gửi tới LLM đã chọn (OpenRouter hoặc Amazon Bedrock) để viết báo cáo. Trả lời trong một thread cũ (mở từ ngày trước) không được đọc.
+
+## Chạy trên AWS
+
+Cả hai POC chạy trong một task ECS Fargate, LLM gọi qua Amazon Bedrock bằng task role. Mọi tài nguyên nằm trong hai CloudFormation stack và mang tag `Project=slack-web-automation-poc`. Cần AWS CLI v2 đã đăng nhập, Docker, và `.env` đã điền; quyền cần có nằm trong [docs/05-prerequisites-and-access.md](docs/05-prerequisites-and-access.md), mục 6. Không chạy `npm run slack` ở local cùng lúc.
+
+```bash
+cp infra/local.env.example infra/local.env   # điền Region, CLI profile, múi giờ của bạn; file này bị git ignore
+
+infra/poc.sh up                 # dựng tất cả theo profile private-nat (hoặc: up public)
+infra/poc.sh verify             # task chạy một lần: IP ra ngoài, luồng form, báo cáo hôm nay
+infra/poc.sh status             # stack, task đang chạy, IP ra ngoài, mọi tài nguyên có tag
+infra/poc.sh pause | resume     # dừng hoặc chạy lại task
+infra/poc.sh down               # xoá phần tốn tiền, giữ image và secret (khoảng 0,5 USD/tháng)
+infra/poc.sh down --all         # xoá sạch
+```
+
+| Profile (`infra/profiles/`) | Mạng | Chi phí khi chạy cả tháng |
+|---|---|---|
+| `private-nat` | Private subnet, NAT Gateway, Elastic IP cố định | khoảng 82 USD |
+| `public` | Public subnet, IP đổi mỗi lần task khởi động | khoảng 39 USD |
+
+Chi phí là ví dụ theo giá niêm yết của một Region; bảng đầy đủ ở [docs/04-operating-cost.md](docs/04-operating-cost.md). Hướng dẫn chi tiết và kết quả kiểm chứng: [docs/03-aws-deployment.md](docs/03-aws-deployment.md).
 
 ## Mock portal
 
@@ -107,7 +131,8 @@ Quy tắc của portal:
 |---|---|
 | `src/core/` | Định nghĩa trường và validation, điều phối job, secret store, logger |
 | `src/worker/` | Playwright: đăng nhập, điền wizard, so khớp màn hình xác nhận, gửi |
-| `src/llm/` | Gọi OpenRouter: điền sẵn form từ câu mô tả tự do, viết daily report |
+| `src/llm/` | Gọi LLM (OpenRouter hoặc Amazon Bedrock): điền sẵn form từ câu mô tả tự do, viết daily report |
+| `infra/` | CloudFormation, resource profile và script `poc.sh` để dựng, kiểm chứng và dọn môi trường AWS |
 | `src/report/` | Daily report: đọc kênh Slack, đọc Jira, dựng và đăng báo cáo |
 | `src/slack/` | Modal, handler và điểm khởi động app Slack |
 | `src/mock-portal/` | Website giả lập |

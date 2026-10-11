@@ -9,10 +9,11 @@ This document covers what is specific to this POC. The shared parts (Slack conne
 | Part | Status |
 |---|---|
 | Report from a real Slack channel and a real Jira project | Run on 2026-10-06 from a laptop, with `npm run report`. Both were filled with invented test data |
-| Posting the report to Slack | Covered by automated tests with a fake Slack client. **Not run against the real workspace** |
-| `/daily-report` command | Covered by the same tests. **Not run in a real workspace** |
-| Daily schedule (`REPORT_TIME`) | The timing arithmetic is tested. **Never left running** |
-| On AWS | **Not deployed** |
+| The same report on AWS, written by Amazon Bedrock | Run on 2026-10-11 by a one-off task on Fargate, for the day 2026-10-06: 25 messages, 34 issues |
+| Posting the report to Slack | Covered by automated tests with a fake Slack client. Posted to the real report channel once, by that task |
+| `/daily-report` command | Covered by the same tests. Run in the real workspace on 2026-10-11, against the task on AWS |
+| Daily schedule (`REPORT_TIME`) | The timing arithmetic is tested. Fired once on AWS on 2026-10-11 and posted the report of the day. Never left running over several days |
+| On AWS | Deployed on 2026-10-11 in the same task as the other POC, then removed |
 | A real project's chat and issues | **Not tried** |
 
 ## 2. Problem
@@ -44,13 +45,13 @@ flowchart LR
         RC[Report channel<br/>written]
     end
     JI[Jira Cloud<br/>read-only]
-    OR[LLM provider<br/>OpenRouter]
+    OR[LLM provider<br/>OpenRouter, optional]
 
-    subgraph AWS[The organisation's AWS environment, not yet deployed]
+    subgraph AWS[The organisation's AWS environment]
         SM[AWS Secrets Manager<br/>Slack tokens, LLM key, Atlassian email and token]
         CW[Amazon CloudWatch Logs]
         ECR[Amazon ECR]
-        BR[Amazon Bedrock<br/>proposed]
+        BR[Amazon Bedrock]
         subgraph TASK[Amazon ECS on AWS Fargate: the same task as the other POCs]
             EP[Entry points<br/>/daily-report, daily timer]
             RS[Report service<br/>day window, flags, clean-up, posting]
@@ -71,14 +72,14 @@ flowchart LR
     CR -->|history, replies, names| SC
     JR -->|one JQL query| JI
     LC -->|the day's chat and the issue list| OR
-    LC -.->|proposed| BR
+    LC -->|Converse| BR
     RS -->|the report| RC
     SM -.->|at task start| TASK
     ECR -.->|image| TASK
     RS -.->|report events| CW
 ```
 
-AWS services in this POC: the same ECS task, ECR image, Secrets Manager secret and CloudWatch log group as the platform, with two more keys in the secret. It needs no NAT Gateway or Elastic IP of its own, because Slack, Jira and the LLM provider do not check the caller's address; when it shares a task with the web form POC its traffic leaves through that POC's NAT Gateway. **None of this has been run for the daily report**: it has only run from a laptop, where the same components run without the AWS box.
+AWS services in this POC: the same ECS task, ECR image, Secrets Manager secret and CloudWatch log group as the platform, with two more keys in the secret. It needs no NAT Gateway or Elastic IP of its own, because Slack, Jira and the LLM provider do not check the caller's address; when it shares a task with the web form POC its traffic leaves through that POC's NAT Gateway. On 2026-10-11 the report ran in that task once, started by hand, with the LLM on Amazon Bedrock through the task role; the command in Slack and the schedule were each tried there once the same day.
 
 | Component | Responsibility | In the repo |
 |---|---|---|
@@ -211,12 +212,12 @@ The day runs from local midnight to local midnight in the process's time zone (`
 | `JIRA_PROJECT_KEY` | Reads the project's open issues plus those updated in the last day |
 | `JIRA_JQL` | A full query, in place of the default one |
 
-The report is switched on when `REPORT_CHANNELS`, `REPORT_POST_CHANNEL` and `OPENROUTER_API_KEY` are all set. At most 100 issues are read.
+The report is switched on when `REPORT_CHANNELS`, `REPORT_POST_CHANNEL` and an LLM provider (`OPENROUTER_API_KEY`, or `LLM_PROVIDER=bedrock`) are all set. At most 100 issues are read.
 
 ## 6. Running it
 
 ```bash
-npm run report -- --sample        # an invented day from a fixture; needs only OPENROUTER_API_KEY
+npm run report -- --sample        # an invented day from a fixture; needs only an LLM provider
 npm run report                    # today, from the configured channels and Jira; prints, does not post
 npm run report -- 2026-10-05      # another day
 npm run report -- --post          # also post to REPORT_POST_CHANNEL
@@ -276,15 +277,14 @@ This was one run with one model, read by one person. It shows what the report ca
 | File contents are not read | A file appears as its name only |
 | One assignee per issue, 100 issues per report | Larger projects need a narrower `JIRA_JQL` |
 | The schedule lives in the process | A report due while the task is stopped is not posted, and nothing catches up |
-| The whole day's chat and the issue list go to the LLM provider | With OpenRouter, that text leaves the organisation every day |
+| The whole day's chat and the issue list go to the LLM provider | With OpenRouter, that text leaves the organisation every day. With Amazon Bedrock it stays inside AWS |
 | The check is as good as the prompt and the model | A different model can give a different report from the same input |
 
 ## 9. Gaps and next steps
 
 1. **Extend the Jira check** to the three missed cases, and pass priority to the LLM. Rerun the seeded day and compare against the table in section 7.
-2. **Try the untried paths:** `/daily-report` in a real workspace, posting, and `REPORT_TIME` left running across midnight.
-3. **Deploy to AWS** following [03-aws-deployment.md](../03-aws-deployment.md), section 5.
-4. **Pilot on one real project**, with the project lead comparing each report against their own for one or two weeks. This needs the decision on where the chat may be sent (overview, section 6).
+2. **Leave the schedule running** on AWS for several days, across midnight ([03-aws-deployment.md](../03-aws-deployment.md), section 4). It has fired once.
+3. **Pilot on one real project**, with the project lead comparing each report against their own for one or two weeks. This needs the decision on where the chat may be sent (overview, section 6).
 
 Beyond the platform's own list (architecture document, section 8), a production version needs:
 

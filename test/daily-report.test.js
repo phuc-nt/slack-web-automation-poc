@@ -1,9 +1,10 @@
 // The daily report with fake Slack, Jira and model. The last test calls the real model
-// on the sample day and is skipped when no API key is configured.
+// on the sample day and is skipped when no LLM provider is configured.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadConfig } from '../src/config.js';
+import { configuredChat } from '../src/llm/configured-chat.js';
 import { writeDailyReport } from '../src/llm/write-daily-report.js';
 import { createDailyReporter, dayWindow, msUntil, splitForSlack, withoutMentions } from '../src/report/daily-report-service.js';
 import { defaultJql, fetchJiraIssues } from '../src/report/jira-issues.js';
@@ -165,10 +166,11 @@ test('/daily-report posts through the reporter and only points the requester to 
 });
 
 const config = loadConfig();
+const chat = configuredChat(config);
 
-test('real model: the sample day yields a report that carries the facts that matter', { skip: !config.openRouterApiKey && 'OPENROUTER_API_KEY not set' }, async () => {
+test('real model: the sample day yields a report that carries the facts that matter', { skip: !chat && 'no LLM provider configured' }, async () => {
   const { reporter } = sampleReporter({
-    writeReport: (input) => writeDailyReport(input, { apiKey: config.openRouterApiKey, model: config.reportModel, language: config.reportLanguage }),
+    writeReport: (input) => writeDailyReport(input, { llm: chat, model: config.reportModel, language: config.reportLanguage }),
   });
   const { text } = await reporter.build(SAMPLE_DATE);
   const missing = SAMPLE_EXPECTATIONS.filter(({ pattern }) => !pattern.test(text)).map(({ name }) => name);

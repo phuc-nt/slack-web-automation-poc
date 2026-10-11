@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Slack automation platform POC, base layer: the container image repository and the
+  secret that holds the Slack, portal and Jira credentials - kept apart from the
+  platform stack so the costly part (network, Fargate) can be deleted and recreated
+  without rebuilding the image or re-entering secrets.
+
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
+  com.aws.cloudformation.Context:
+    arch: base (ECR + secret) -> platform stack takes ImageUri + SecretArn as parameters
+    must:
+      - delete the platform stack before this one
+    ref:
+      - at: docs/03-aws-deployment.md
+        has: deployment guide, cleanup (cost in docs/04-operating-cost.md)
+        scope: shared
+
+Resources:
+  Repository:
+    Type: AWS::ECR::Repository
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: POC images are disposable, so the repo empties itself on stack delete and keeps only the last 3 images
+    Properties:
+      RepositoryName: !Ref AWS::StackName
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: >-
+          {"rules":[{"rulePriority":1,"description":"keep the last 3 images",
+          "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":3},
+          "action":{"type":"expire"}}]}
+
+  AppSecret:
+    Type: AWS::SecretsManager::Secret
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: created empty; infra/poc.sh writes the value from the local .env so no secret passes through a template or a parameter
+        must:
+          - JSON keys SLACK_BOT_TOKEN, SLACK_APP_TOKEN, PORTAL_USERNAME, PORTAL_PASSWORD, JIRA_EMAIL, JIRA_API_TOKEN must all exist or the task fails to start
+    Properties:
+      Name: !Ref AWS::StackName
+      Description: Slack, portal and Jira credentials of the Slack automation platform POC
+
+Outputs:
+  RepositoryUri:
+    Value: !GetAtt Repository.RepositoryUri
+  SecretArn:
+    Value: !Ref AppSecret

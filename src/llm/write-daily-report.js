@@ -28,18 +28,17 @@ function issueLines(issues) {
   }).join('\n');
 }
 
-export async function writeDailyReport({ date, chat, issues, jiraNote = '' }, { apiKey, model, language = 'Vietnamese', timeoutMs = 120_000, fetchImpl = fetch } = {}) {
+export async function writeDailyReport({ date, chat, issues, jiraNote = '' }, { llm, apiKey, model, language = 'Vietnamese', timeoutMs = 120_000, fetchImpl = fetch } = {}) {
   const jira = issues.length
     ? `key | type | status | assignee | due | updated | flags | summary\n${issueLines(issues)}`
     : `(no issues available${jiraNote ? `: ${jiraNote}` : ''})`;
-  return chatCompletion({
-    apiKey,
+  return (llm || ((request) => chatCompletion({ apiKey, fetchImpl, ...request })))({
     model,
     messages: [
       { role: 'system', content: systemPrompt(date, language) },
       { role: 'user', content: `# Chat messages on ${date}\n\n${chat}\n\n# Jira issues\n\n${jira}` },
     ],
     timeoutMs,
-    fetchImpl,
+    maxTokens: 4096,
   });
 }

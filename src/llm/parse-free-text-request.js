@@ -45,16 +45,14 @@ function extractJson(text) {
   return JSON.parse(text.slice(start, end + 1));
 }
 
-export async function parseFreeTextRequest(text, { apiKey, model, now = new Date(), timeoutMs = 20_000, fetchImpl = fetch } = {}) {
-  const content = await chatCompletion({
-    apiKey,
+export async function parseFreeTextRequest(text, { llm, apiKey, model, now = new Date(), timeoutMs = 20_000, fetchImpl = fetch } = {}) {
+  const content = await (llm || ((request) => chatCompletion({ apiKey, fetchImpl, ...request })))({
     model,
     messages: [
       { role: 'system', content: systemPrompt(localToday(now)) },
       { role: 'user', content: text },
     ],
     timeoutMs,
-    fetchImpl,
   });
   return keepWellFormed(extractJson(content));
 }

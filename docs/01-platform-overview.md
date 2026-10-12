@@ -62,6 +62,36 @@ In plain terms:
 - **There are no servers to manage.** AWS provides the machines, patches the operating system and restarts the system after a failure.
 - **The LLM can sit outside or inside AWS.** The choice changes where the organisation's text travels, and is one place in the software.
 
+### The Slack app has two halves
+
+"The Slack app" is one thing in two places, and each half is useless without the other.
+
+| | The half in Slack | The half that runs |
+|---|---|---|
+| What it is | A registration: the bot's name and picture, what it is permitted to read and write, which commands it answers | The program that does the work: reads the request, calls the LLM, drives the browser, writes the report |
+| Who creates it | A Slack administrator, in a few steps on Slack's own pages | The engineering team, who write it and run it |
+| Where it lives | In the Slack workspace | Anywhere that can reach the internet. In this platform, on AWS |
+
+The half in Slack is like a staff badge and a telephone extension: it says who the bot is and which rooms it may enter. The badge is not the person. The person who does the work sits somewhere else.
+
+Creating the app in Slack does not put anything on AWS. The two halves are joined by hand:
+
+1. When the app is created, Slack issues a pair of secret codes, called tokens. They are the keys that go with the badge.
+2. The team puts the tokens in the secret store.
+3. When the program starts, it takes the tokens and calls Slack: "I am this bot, and here are the keys." Slack checks them and keeps the line open.
+4. From then on, whatever someone types to the bot travels down that line to the program, and the answer travels back.
+
+What follows from this:
+
+- **The program calls Slack, never the reverse.** This is why nothing has to be open to the internet.
+- **The program can run anywhere**, including a laptop. The POCs ran on a laptop first, and then on AWS, with the same app in Slack.
+- **A laptop is for trying, not for use.** It has to stay switched on, or the bot goes silent and the scheduled report does not run. It also has no fixed IP address, which the first POC needs.
+- **Only one copy may run.** With two copies holding the same tokens, each request goes to one of them at random.
+- **If the program is stopped, the bot is still listed in Slack**, but nobody answers.
+- **Whoever holds the tokens is the bot.** This is why the tokens stay in the secret store, and why a Slack administrator has to approve the app.
+
+Slack also offers a second way of connecting, in which Slack calls the program. That way needs a public address on the internet, and this platform does not use it.
+
 ## 3. Commitments every POC keeps
 
 | Commitment | What it means for the organisation |

@@ -56,6 +56,8 @@ The names in this section are generic. The services and technologies the POC use
 | Access roles | What the system itself may do in the cloud: call the one LLM model, and nothing else |
 | Infrastructure templates | Create and remove the whole environment the same way every time |
 
+**The Slack app is one thing in two places.** What a Slack administrator creates in the workspace is a registration: the bot's name, its permissions and its commands. By itself it does nothing. The work is done by the program the team runs, here in the cloud. Slack issues secret codes for the app; the program keeps them in the secret store and uses them to call Slack and say which bot it is. Creating the app in Slack therefore deploys nothing, and stopping the program leaves a bot that is listed in Slack and does not answer.
+
 ### 3.2 The flow
 
 **When the system starts.** The container runtime takes the packaged system from the image registry, starts it inside the private network and hands it its credentials from the secret store. The Slack app then opens a connection out to Slack and keeps it open, and the daily schedule is set for its time. Requests arrive over that connection, so nothing has to be reachable from the internet.

@@ -1,298 +1,195 @@
 # POC 2: Daily Report
 
-The system reads the day's messages in the project's Slack channels and the project's Jira issues, has an LLM write the daily report, and posts it to one fixed channel. The report includes a check of where the chat and Jira disagree.
+This document describes a concept that has been built and run end to end. It is written for decision makers: what the concept automates, how it works, what was proven and what was not, what it costs, and what the team must be granted before it can be piloted on a real project.
 
-This document covers what is specific to this POC. The shared parts (Slack connection, LLM client, Jira connection, configuration, rules every POC keeps) are in [02-platform-architecture.md](../02-platform-architecture.md); the AWS setup is in [03-aws-deployment.md](../03-aws-deployment.md), section 5; the summary for decision makers is in [01-platform-overview.md](../01-platform-overview.md).
+It contains no code and needs none to be read. A sample implementation and the engineering documents are in the project's repository (section 11).
 
-## 1. Status
+## 1. Summary
 
-| Part | Status |
+| | |
 |---|---|
-| Report from a real Slack channel and a real Jira project | Run on 2026-10-06 from a laptop, with `npm run report`. Both were filled with invented test data |
-| The same report on AWS, written by Amazon Bedrock | Run on 2026-10-11 by a one-off task on Fargate, for the day 2026-10-06: 25 messages, 34 issues |
-| Posting the report to Slack | Covered by automated tests with a fake Slack client. Posted to the real report channel once, by that task |
-| `/daily-report` command | Covered by the same tests. Run in the real workspace on 2026-10-11, against the task on AWS |
-| Daily schedule (`REPORT_TIME`) | The timing arithmetic is tested. Fired once on AWS on 2026-10-11 and posted the report of the day. Never left running over several days |
-| On AWS | Deployed on 2026-10-11 in the same task as the other POC, then removed |
-| A real project's chat and issues | **Not tried** |
+| **What it does** | The system reads the day's messages in a project's Slack channels and the project's Jira issues, has an LLM write the daily report, and posts it to one fixed channel. The report points out where the chat and Jira disagree |
+| **Problem it answers** | Someone reads a day of chat and the task board to write a status report, and the chat and the board drift apart without anyone noticing |
+| **Status** | Ran from a laptop on 2026-10-06 and on AWS on 2026-10-11, against a real Slack workspace and a real Jira Cloud site, both filled with invented data. Not yet tried on a real project |
+| **Running cost** | About 39 USD a month by itself. Almost nothing when added to a deployment that already runs |
+| **Needed to go further** | A decision that a day of project chat may be sent to an LLM, a Slack app allowed to read the project's channels, a read-only Jira account, and a cloud environment the team may build in (section 7) |
+| **What it is not** | A record of truth. The report is a draft for a person to check |
 
-## 2. Problem
+## 2. The use case
 
-A project lead ends the day by reading the channel, opening the board, and writing down what was done, what is stuck, and what was decided. Two things go wrong when this is done by hand: it takes time every day, and the board drifts from reality without anyone noticing. Someone says "done" in chat and the issue stays open; an issue passes its due date and nobody mentions it.
+A project lead writes the daily report by reading the day's messages and checking the task board. It takes time every day. It also misses what no one person sees: the chat says a piece of work is finished while Jira still shows it in progress, or an issue passes its due date and nobody mentions it.
 
-Both sources are needed to see the drift. Chat alone does not know the due dates; Jira alone does not know what people said today.
+| The concept fits when | It does not fit when |
+|---|---|
+| The working talk happens in a few Slack channels | Decisions are made in direct messages, calls and meetings |
+| Work is tracked in Jira Cloud | The tracker is Jira Server, Jira Data Center or another product |
+| People write the issue key when they talk about an issue | Issues are referred to by description only |
+| Someone reads the draft before relying on it | The report must be correct without a check |
+| The chat and the issue list may be sent to an LLM provider | The data owner forbids it |
 
 ## 3. How it works
 
+1. A project member asks for the report in Slack, for today or an earlier date, or a daily schedule starts it.
+2. The system reads the day's messages in the channels configured for the project, and the project's issues from Jira. Jira is only read, never changed.
+3. Before the LLM is involved, the system marks each issue by rule: overdue, and not mentioned in the day's chat.
+4. The LLM writes the report from both, in one call.
+5. The report is posted to one fixed channel. The person who asked receives a pointer to it, not the report itself.
+
+The report has a header with the date, the number of messages and issues read, and a notice that an LLM wrote it and that it should be checked. Eight sections follow, always in the same order: summary, done today, in progress, blockers and risks, decisions, open questions, Jira check, next steps.
+
+The Jira check reports four things: issues that are overdue; issues the chat says are finished while Jira does not; issues the chat says are blocked or slipping; and open issues due within three days that nobody mentioned. Issues that are on track are left out.
+
 ```mermaid
-flowchart LR
-    T[Trigger<br/>/daily-report, schedule,<br/>or npm run report] --> R[Report service]
-    R -->|day's messages and thread replies| S[Slack channels]
-    R -->|one query| J[Jira Cloud]
-    R --> F[Flags worked out in code:<br/>overdue, not mentioned in chat]
-    F --> L[LLM writes eight sections]
-    L --> C[Clean-up:<br/>mentions neutralised, split to fit]
-    C --> P[One fixed Slack channel]
+sequenceDiagram
+    actor M as Project member
+    participant S as System
+    participant K as Slack channels
+    participant J as Jira
+    participant L as LLM
+
+    M->>S: Asks for the report (or the schedule starts it)
+    S->>K: Read the day's messages
+    S->>J: Read the project's issues
+    S->>S: Mark overdue and unmentioned issues
+    S->>L: Messages and issues
+    L-->>S: The report
+    S->>K: Post to the report channel
+    S-->>M: Pointer to the report
 ```
 
-### 3.1 Components
+## 4. What it is made of
+
+One small system runs in the organisation's own AWS environment. It opens its connections to Slack and Jira from the inside, so nothing in it is reachable from the internet.
 
 ```mermaid
 flowchart LR
-    U[Project member]
-    subgraph SLK[Slack]
-        SC[Project channels<br/>read]
-        RC[Report channel<br/>written]
-    end
-    JI[Jira Cloud<br/>read-only]
-    OR[LLM provider<br/>OpenRouter, optional]
-
+    U[Project members] --- SL[Slack<br/>project channels<br/>report channel]
     subgraph AWS[The organisation's AWS environment]
-        SM[AWS Secrets Manager<br/>Slack tokens, LLM key, Atlassian email and token]
-        CW[Amazon CloudWatch Logs]
-        ECR[Amazon ECR]
-        BR[Amazon Bedrock]
-        subgraph TASK[Amazon ECS on AWS Fargate: the same task as the other POCs]
-            EP[Entry points<br/>/daily-report, daily timer]
-            RS[Report service<br/>day window, flags, clean-up, posting]
-            CR[Channel reader]
-            JR[Jira reader]
-            RW[Report writer<br/>prompt]
-            LC[LLM client]
-        end
+        APP[Slack app<br/>and daily schedule]
+        RW[Report writer]
+        LLM[Amazon Bedrock<br/>the LLM]
     end
-
-    U -->|/daily-report| SLK
-    SLK <-->|Socket Mode| EP
-    EP --> RS
-    RS --> CR
-    RS --> JR
-    RS --> RW
-    RW --> LC
-    CR -->|history, replies, names| SC
-    JR -->|one JQL query| JI
-    LC -->|the day's chat and the issue list| OR
-    LC -->|Converse| BR
-    RS -->|the report| RC
-    SM -.->|at task start| TASK
-    ECR -.->|image| TASK
-    RS -.->|report events| CW
+    SL <--> APP
+    APP --> RW
+    RW --> LLM
+    RW -->|read only| JIRA[Jira Cloud]
 ```
 
-AWS services in this POC: the same ECS task, ECR image, Secrets Manager secret and CloudWatch log group as the platform, with two more keys in the secret. It needs no NAT Gateway or Elastic IP of its own, because Slack, Jira and the LLM provider do not check the caller's address; when it shares a task with the web form POC its traffic leaves through that POC's NAT Gateway. On 2026-10-11 the report ran in that task once, started by hand, with the LLM on Amazon Bedrock through the task role; the command in Slack and the schedule were each tried there once the same day.
-
-| Component | Responsibility | In the repo |
-|---|---|---|
-| Channel reader | The messages of each channel for one day, with thread replies, display names and file names, in the order written | `src/report/slack-channel-history.js` |
-| Jira reader | One query; keeps key, summary, type, status, assignee, priority, due date, last update | `src/report/jira-issues.js` |
-| Report service | The day's time window, the flags, the fallback when Jira fails, the clean-up, posting, the schedule | `src/report/daily-report-service.js` |
-| Report writer | The prompt and the call to the LLM | `src/llm/write-daily-report.js` |
-| Factory | Builds the reporter from configuration; returns nothing when the report is not configured | `src/report/configured-reporter.js` |
-| Entry points | `/daily-report [YYYY-MM-DD]` in Slack; `REPORT_TIME`; a terminal script | `src/slack/slack-handlers.js`, `src/slack/start-slack-app.js`, `scripts/run-daily-report.js` |
-
-### 3.2 Sequences
-
-**On request**, with the degraded branches:
-
-```mermaid
-sequenceDiagram
-    actor U as User
-    participant S as Slack
-    participant E as Entry point
-    participant R as Report service
-    participant J as Jira Cloud
-    participant L as LLM
-
-    U->>S: /daily-report [YYYY-MM-DD]
-    S->>E: command event
-    E-->>S: acknowledge
-    E-->>S: "Writing the daily report", to the requester only
-    E->>R: post(date)
-    R->>R: day window in the process's time zone
-    loop each channel in REPORT_CHANNELS
-        R->>S: conversations.history for the window
-        S-->>R: messages
-        R->>S: conversations.replies for each thread, users.info for each name
-        S-->>R: replies and display names
-    end
-    alt Jira is configured
-        R->>J: POST /rest/api/3/search/jql
-        alt Jira answers
-            J-->>R: up to 100 issues
-            R->>R: flag each issue OVERDUE and NOT-IN-CHAT
-        else Jira fails
-            J-->>R: error or timeout
-            R->>R: continue with chat alone, note the reason for the header
-        end
-    else Jira is not configured
-        R->>R: continue with chat alone
-    end
-    alt no messages and no issues
-        R->>R: one-line report, the LLM is not called
-    else
-        R->>L: prompt, transcript, issue table with flags
-        L-->>R: report text in eight sections
-        R->>R: neutralise mentions, add the header, split at 3,500 characters
-    end
-    R->>S: chat.postMessage to REPORT_POST_CHANNEL, one per part
-    R-->>E: done
-    E-->>S: "posted in #channel", to the requester only
-    opt reading Slack or calling the LLM fails
-        E-->>S: "Could not write the daily report" and the reason, to the requester only
-    end
-```
-
-**On schedule.** The same work, started by the timer the process arms at start-up:
-
-```mermaid
-sequenceDiagram
-    participant T as Daily timer
-    participant R as Report service
-    participant S as Slack
-    participant J as Jira Cloud
-    participant L as LLM
-
-    Note over T: Armed at start-up when REPORT_TIME is set
-    T->>R: local time reaches REPORT_TIME, post(today)
-    R->>S: read today's messages up to now
-    R->>J: read issues
-    R->>L: write the report
-    L-->>R: text
-    R->>S: post to REPORT_POST_CHANNEL
-    alt anything fails
-        R->>R: log scheduled_report_failed, nothing is posted, no retry
-    end
-    R->>T: arm for the same time tomorrow
-```
-
-**From a terminal.** `npm run report` runs the report service outside the Slack app, with the same reads; it prints the report and posts only with `--post`. This is the path that was run on 2026-10-06.
-
-### 3.3 The report
-
-The report has a header line and eight sections, always in this order:
-
-| Section | Content |
+| Component | Role |
 |---|---|
-| Header | The date, how many messages from which channels, how many issues, and a note that an LLM wrote it |
-| Summary | Two or three sentences on the day |
-| Done today | Work the chat says was finished |
-| In progress | Ongoing work, and who is on it |
-| Blockers and risks | What is stuck, and what it waits on |
-| Decisions | What was agreed, and by whom |
-| Open questions | Questions nobody answered |
-| Jira check | Where chat and Jira disagree, and issues that need attention |
-| Next steps | What people said they will do next |
+| Slack app | Receives the request, reads the history of the channels it was invited to, posts the report |
+| Daily schedule | Starts the report at a set time every day, inside the same system |
+| Jira reader | Reads the project's issues with a read-only account |
+| Report writer | Puts messages and issues together, marks the issues by rule, and asks the LLM for the text |
+| LLM | Writes the report. Required. On AWS it is a model on Amazon Bedrock, so the chat stays inside AWS |
+| Container service, secret store, logs | One small container that is always on. The Slack and Jira credentials are kept in the secret store, and secrets are removed from the log |
 
-## 4. Design rules of this POC
+No browser and no fixed IP address are involved, unless the Jira site restricts access by address.
 
-These add to the rules every POC keeps (architecture document, section 5).
+## 5. Safeguards
 
-| Rule | What it means | Why |
-|---|---|---|
-| The flags are computed in code | An issue is `OVERDUE` when it has a due date before the report's date and is not done. It is `NOT-IN-CHAT` when its key does not appear in the day's messages. The LLM receives the flags | Small models get date arithmetic and counting wrong |
-| The report goes to one configured channel | Whoever runs `/daily-report` gets only a pointer to that channel | Otherwise asking for a report would be a way to read channels a person is not in |
-| Mentions are neutralised | User, group and `@channel` mentions in the LLM's text are turned into plain text before posting | A quoted message must not notify anyone |
-| Earlier reports are not read back | The bot's own posts are skipped | The next report would summarise a summary |
-| Jira is optional | Without the `JIRA_*` settings, or when the query fails, the report is written from chat alone and its header says why | A report without the check is still useful |
-| An empty day costs nothing | No messages and no issues: a one-line report, no LLM call | |
-| Long input and output are bounded | Chat beyond 120,000 characters is cut, and the LLM is told so. A long report is split into messages of at most 3,500 characters at paragraph breaks | Model and Slack limits |
-
-The day runs from local midnight to local midnight in the process's time zone (`TZ`). For today, it stops at the moment of the request.
-
-## 5. Configuration
-
-| Variable | Meaning |
+| Concern | What the design does |
 |---|---|
-| `REPORT_CHANNELS` | Channel IDs to read, comma-separated. The bot must be a member of each |
-| `REPORT_POST_CHANNEL` | Channel ID the report is posted to. The bot must be a member |
-| `REPORT_TIME` | Local `HH:MM` to post every day. Empty: only on request |
-| `REPORT_LANGUAGE` | Language of the report. Default Vietnamese |
-| `REPORT_MODEL` | Model for the report. Empty: the platform's default model |
-| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | The Jira Cloud site and the account that reads it |
-| `JIRA_PROJECT_KEY` | Reads the project's open issues plus those updated in the last day |
-| `JIRA_JQL` | A full query, in place of the default one |
+| The LLM states something wrong | The overdue and not-mentioned marks are computed by rule, not by the LLM. The header says an LLM wrote the report and that it should be checked |
+| The report becomes a way to read channels one is not a member of | It is always posted to one fixed channel. Whoever asks receives only a pointer |
+| Text in a message or an issue tries to instruct the LLM | Chat and issues are treated as data. An instruction planted in the test data was not obeyed. The LLM only writes text and cannot start any action |
+| The system changes something in Jira | It cannot. Its access is read-only |
+| The report notifies people it names | Mentions are neutralised before posting |
+| Jira is unavailable | The report is written from the chat alone, and the header says why |
+| Slack or the LLM fails | Nothing is posted. The person who asked is told; a scheduled run records the failure and does not retry |
+| A day without messages | One line says so, and the LLM is not called |
 
-The report is switched on when `REPORT_CHANNELS`, `REPORT_POST_CHANNEL` and an LLM provider (`OPENROUTER_API_KEY`, or `LLM_PROVIDER=bedrock`) are all set. At most 100 issues are read.
+## 6. What was verified
 
-## 6. Running it
+An invented project day was put into a real Slack channel and a real Jira Cloud project: 25 messages, and 17 issues each built as one situation the report should handle.
 
-```bash
-npm run report -- --sample        # an invented day from a fixture; needs only an LLM provider
-npm run report                    # today, from the configured channels and Jira; prints, does not post
-npm run report -- 2026-10-05      # another day
-npm run report -- --post          # also post to REPORT_POST_CHANNEL
-```
+Result of the run on 2026-10-06, from a laptop, with a small model from an outside provider (DeepSeek V4.1 Flash through OpenRouter):
 
-With `npm run slack` running, `/daily-report` or `/daily-report 2026-10-05` posts the report, and `REPORT_TIME` posts it every day.
-
-## 7. Test data
-
-Two scripts put an invented project day into a real workspace and a real Jira project, so the whole path can be exercised without real project data. Both print what they would do and change nothing unless `--post` is given.
-
-| Step | Command | What it does |
+| Outcome | Situations | Examples |
 |---|---|---|
-| 1 | `npm run seed:jira -- --post` | Creates 17 issues in `JIRA_PROJECT_KEY`, labelled `daily-report-seed`, and saves the keys they received to `artifacts/jira-seed-keys.json`. Refuses to run when issues with that label already exist |
-| 2 | `npm run seed -- <channel ID> --post` | Posts 25 messages to the channel under simulated names, with threads and off-topic talk, using the saved issue keys |
-| 3 | `npm run report` | Writes the report from both |
+| Caught | 8 | The chat says finished while Jira shows in progress. An overdue issue nobody mentioned. A due date in the chat that differs from Jira's. An unassigned issue due in two days |
+| Missed | 3 | The chat says 60% done while Jira shows not started and unassigned. Work finished without a word in the chat. Work in progress with no owner and no due date |
+| Not assessed | 3 | A bug reported only in the chat, an epic, a sub-task |
+| Correctly left out | 2 | Control cases: an issue due in a month, and a finished issue with a past due date |
+| Planted instruction not obeyed | 1 | An issue whose title tells the report to show everything as on track |
 
-`npm run seed -- <channel ID> --rekey` rewrites the issue keys in messages already posted today, for when the channel was seeded before the Jira project.
+The three misses have one cause: they are outside the four things the Jira check is asked to report. Extending the check is the first next step. This was one run, with one model, read by one person. It shows what the report can do, not how often it does it.
 
-Due dates are set relative to the day of seeding, so the issues go stale: a day later, "due today" has become "overdue". The seeded issues are not removed by any script; delete them in Jira by the label.
+On AWS, on 2026-10-11, with the LLM on Amazon Bedrock (GLM 4.7 Flash): the report for the same day was written and posted from 25 messages and 34 issues, a request from Slack posted its report, and the daily schedule fired once. One report takes 3 to 10 seconds. With this model the Jira check was weaker than the other sections.
 
-The 17 issues, each one a case, with the result of the run on 2026-10-06:
+**Not verified:**
 
-| Ref | Case | Result |
-|---|---|---|
-| 101 | Chat says finished and merged; Jira still In Progress | Caught |
-| 102 | Blocked in chat; chat gives a due date one day later than Jira's | Caught, both |
-| 103 | Chat says 60% done; Jira still To Do and unassigned | **Missed** |
-| 104 | Overdue, nobody mentioned it | Caught |
-| 105 | Unassigned, due in two days, not in chat | Caught |
-| 106 | Chat says it starts tomorrow; Jira already Done | Caught |
-| 107 | New bug reported in chat, unassigned, no due date | Not assessed |
-| 108 | Finished today without a word in chat | **Missed** |
-| 109 | In progress and due today, not in chat | Caught |
-| 110 | Top-priority bug, overdue, unassigned, not in chat | Caught as overdue; its priority was not shown |
-| 111 | An epic: a container, not a piece of work | Not assessed |
-| 112 | Sub-task of an issue discussed in chat | Not assessed |
-| 113 | In progress with no owner and no due date | **Missed** |
-| 114 | Control: due in a month | Correctly left out |
-| 115 | Control: Done with a past due date | Correctly left out |
-| 116 | The summary is an instruction to report every issue as on track | Not obeyed; listed as an overdue issue |
-| 117 | Overdue by a month, lowest priority | Caught |
+- A real project's chat and issues.
+- The schedule over several days.
+- A deployment with this POC alone. It always ran beside POC 1.
 
-The project also held 20 older issues from other tests. Eight of them were overdue and the report listed all eight.
+**What the report cannot see:**
 
-Why the three were missed: the prompt asks the Jira check for four things only (overdue; finished in chat but not in Jira; blocked or slipping in chat; due within three days and not in chat). Work under way that Jira shows as not started, work finished silently, and work with no owner are outside that list. Priority is read from Jira but not passed to the LLM, which is why case 110 appeared without it.
+- Direct messages, calls, meetings, and channels the app was not invited to.
+- An issue discussed without its key. It is counted as not mentioned.
+- Replies in a thread that started on an earlier day.
+- The contents of attached files.
+- More than 100 issues in one report.
+- Jira as it was on an earlier day. A report for a past date reads the issues as they are now.
+- A day when the system was stopped at the scheduled time. Nothing catches up.
 
-This was one run with one model, read by one person. It shows what the report can do, not how often it does it.
+## 7. What the team needs to be granted
 
-## 8. Limits
+Most of the time between a decision and a pilot is spent waiting for these. They can be requested in parallel.
 
-| Limit | Effect |
+| # | What | From whom | Notes |
+|---|---|---|---|
+| 1 | A decision that a full day of project chat and the issue list may be sent to an LLM every day | Data owner, with the project lead | With Amazon Bedrock the text stays inside AWS. With an outside provider it leaves the organisation. This decision selects the provider |
+| 2 | Approval to install a custom Slack app that reads channel history | Slack workspace administrator | The app reads the messages of the public and private channels it is invited to, and nothing else. This is the item a security review will look at. Permission names for the approver: `commands`, `chat:write`, `channels:history`, `groups:history`, `channels:read`, `groups:read`, `users:read`. One more, `chat:write.customize`, was used only to post the test data and is left out of a real installation |
+| 3 | The app invited to each channel it reads, and to the report channel | The owners of those channels | The report channel decides who can read the reports |
+| 4 | A dedicated Jira Cloud account with read access to the project only, and its API token | Jira administrator | The token carries every permission of its account, so the account must be narrow. Tokens expire. The account may count as a paid user, and the site's token policy or address restrictions may apply |
+| 5 | An AWS account or sandbox, in one Region, where the team may build | Cloud or platform team | The team creates a small network (VPC), a container service (ECS on Fargate, ECR), one secret, logs and two service roles, all through CloudFormation |
+| 6 | Use of Amazon Bedrock for the chosen model | Cloud team, and AWS | Three conditions: the model is offered in the Region, the model provider's agreement is accepted, and the account is allowed to use Bedrock. In some accounts only AWS Support can lift the last one, which makes it the longest wait on the cloud side |
+| 7 | Named people | Leadership | A project lead who compares the reports with their own during the pilot, and an owner for the deployment and its credentials |
+
+Not needed: any permission to write to Jira, a fixed IP address, direct messages or file uploads in Slack, or any opening from the internet into the organisation's network.
+
+## 8. Cost
+
+Example figures from AWS list prices in one Region (Asia Pacific, Sydney) in October 2026, in USD, before tax and discounts.
+
+| Situation | USD per month |
 |---|---|
-| Replies in a thread that started on an earlier day are not read | A long-running thread drops out of the report after its first day |
-| An issue counts as mentioned only when its key is written | "The login screen is done" without the key leaves the issue flagged `NOT-IN-CHAT` |
-| Only the bot's channels are read | Direct messages, calls and channels the bot was not invited to are invisible to the report |
-| File contents are not read | A file appears as its name only |
-| One assignee per issue, 100 issues per report | Larger projects need a narrower `JIRA_JQL` |
-| The schedule lives in the process | A report due while the task is stopped is not posted, and nothing catches up |
-| The whole day's chat and the issue list go to the LLM provider | With OpenRouter, that text leaves the organisation every day. With Amazon Bedrock it stays inside AWS |
-| The check is as good as the prompt and the model | A different model can give a different report from the same input |
+| Added to a deployment that already runs, such as POC 1 | about 0.01 |
+| By itself, running all month | about 39 |
+| By itself, behind a fixed IP address | about 82 |
+| By itself, in a container sized for it | about 13, estimated and not built |
 
-## 9. Gaps and next steps
+- By itself, the cost is the container that is always on, not the reports. The POC ran in a container sized for the browser of POC 1, which the report does not use.
+- The LLM is negligible: about 0.01 USD for 22 reports a month, about 0.2 USD for 20 projects.
+- A fixed IP address is needed only if the Jira site restricts access by address.
+- People are not in these figures: the project lead's review during the pilot, and upkeep of the prompt.
 
-1. **Extend the Jira check** to the three missed cases, and pass priority to the LLM. Rerun the seeded day and compare against the table in section 7.
-2. **Leave the schedule running** on AWS for several days, across midnight ([03-aws-deployment.md](../03-aws-deployment.md), section 4). It has fired once.
-3. **Pilot on one real project**, with the project lead comparing each report against their own for one or two weeks. This needs the decision on where the chat may be sent (overview, section 6).
+## 9. Risks and what remains
 
-Beyond the platform's own list (architecture document, section 8), a production version needs:
-
-| Area | Now | Needed |
+| Risk | Effect | Answer |
 |---|---|---|
-| Schedule | A timer in the process | A schedule outside the process, with a catch-up for a missed day |
-| Jira account | A personal account's token | A dedicated account that can browse only the reported projects |
-| Several projects | One set of channels, one query, one report | A configuration per project |
-| Quality tracking | One manual review | A fixed set of days with expected findings, rerun on every change of prompt or model |
-| Writing back | None | To be decided: for example a comment on an issue the report flags |
-| Publishing | Slack only | Confluence, once that block is built |
+| The report is wrong or incomplete and someone relies on it | A wrong picture of the project | The notice in the header, a person who checks, and a pilot that compares it with the project lead's own report |
+| Project chat is sent to a provider outside the organisation | Loss of control over the text | Use Amazon Bedrock, or decide explicitly (section 7, item 1) |
+| The Slack app can read channel history | Wider access than most apps have | It reads only the channels it is invited to, and posts only to one fixed channel |
+| The Jira token reaches more than intended | Access to other projects, and to Confluence on the same site | A dedicated account that can only read the reported project |
+| Quality changes with the model and the prompt | Findings come and go between versions | A fixed set of test days with expected findings, rerun on every change |
+
+The POC is not a production system. Before it serves more than a pilot project it needs:
+
+- a schedule that runs outside the system and catches up on a missed day;
+- settings for several projects (today: one set of channels, one project, one report);
+- a list of who may ask for a report, and a record of who did;
+- monitoring, with an alert when a scheduled report fails or is missed;
+- a model that passes the fixed set of test days;
+- deployment through a reviewed pipeline, and a rotation schedule for the credentials.
+
+## 10. Next steps
+
+1. Extend the Jira check to the three missed situations, and rerun the test day.
+2. Leave the schedule running on AWS for several days.
+3. Pilot on one real project, with the project lead comparing each report with their own for one or two weeks. This needs the decision in section 7, item 1.
+
+## 11. Where the detail is
+
+This document stops at the concept. The sample implementation, the steps to run it, the test data and the documents shared by all POCs are in the project's GitHub repository: start with the [README](../../README.md), then the platform's [overview](../01-platform-overview.md), [architecture](../02-platform-architecture.md), [AWS deployment](../03-aws-deployment.md), [operating cost](../04-operating-cost.md) and [prerequisites and access](../05-prerequisites-and-access.md).

@@ -21,6 +21,8 @@ The figures are an example, not a quote. They use AWS list prices of one Region 
 
 The profiles and the commands are described in [03-aws-deployment.md](03-aws-deployment.md).
 
+This document covers the platform as a whole, item by item. Each POC's document carries a short estimate of what that POC costs by itself and what it adds to a platform that already runs: [web form automation](poc/01-web-form-automation.md), section 8, and [daily report](poc/02-daily-report.md), section 8.
+
 ## 2. AWS, item by item
 
 A month is 730 hours. One task of 1 vCPU and 2 GB on Fargate, `ARM64`.
@@ -101,7 +103,7 @@ aws pricing get-products --region us-east-1 --service-code AmazonECS \
   --filters Type=TERM_MATCH,Field=regionCode,Value=<region> --max-results 100
 ```
 
-Token counts for your own data are in the application log: every model call writes a `llm_call` line with `input`, `output` and `ms`.
+Token counts for your own data are in the application log: with Bedrock, every model call writes an `llm_call` line with `input`, `output` and `ms`.
 
 After the first full month, compare with the bill: in AWS Cost Explorer, filter by the tag `Project` (activate it as a cost allocation tag first) to see exactly what the deployment cost.
 

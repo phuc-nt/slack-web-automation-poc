@@ -1,318 +1,191 @@
 # POC 1: Web Form Automation
 
-A staff member asks in Slack with one sentence. The system signs in to a web application that has no API, fills in the form, stops at the confirmation screen, and submits only when the person who asked approves it.
+This document describes a concept that has been built and run end to end. It is written for decision makers: what the concept automates, how it works, what was proven and what was not, what it costs, and what the team must be granted before it can be applied to a real web application.
 
-This document covers what is specific to this POC. The shared parts (Slack connection, LLM client, configuration, rules every POC keeps) are in [02-platform-architecture.md](../02-platform-architecture.md); the AWS setup is in [03-aws-deployment.md](../03-aws-deployment.md); the summary for decision makers is in [01-platform-overview.md](../01-platform-overview.md).
+It contains no code and needs none to be read. A sample implementation and the engineering documents are in the project's repository (section 11).
 
-The example in the repository is a three-step visitor registration form on a simulated website, the mock portal.
+## 1. Summary
 
-## 1. Status
-
-| Part | Status |
+| | |
 |---|---|
-| Full flow: Slack, LLM pre-fill, browser, approval, duplicate check | Verified locally with automated tests that drive a real browser |
-| The same flow on AWS | Run on 2026-10-05 with 5 requests from Slack, in a public subnet. The environment was then deleted |
-| The same flow on AWS with the LLM on Amazon Bedrock | Run on 2026-10-11 in a private subnet by a one-off verification task, without Slack: pre-fill, browser, submit |
-| Fixed outbound IP address | Confirmed on 2026-10-11: a task's outbound address equals the Elastic IP. No real web application has checked it |
-| Real web application, single sign-on, CAPTCHA | **Not verified.** Only the mock portal has been used |
-| Several requests waiting at once, recovery after a restart, expiry after 10 minutes on AWS | **Not tried** |
+| **What it does** | A staff member writes one sentence in Slack. The system prepares the form, signs in to a web application that has no API, fills the form in and stops at the confirmation screen. It submits only after that person has seen the screen and approved it |
+| **Problem it answers** | Routine data entry into web applications that can only be used through their screens |
+| **Status** | Ran end to end on AWS, most recently on 2026-10-11, against a simulated website. Not yet run against a real web application |
+| **Running cost** | About 82 USD a month when the web application requires a registered IP address, about 39 USD when it does not. The cost does not grow with the number of requests |
+| **Needed to go further** | The agreement of the web application's owner, a dedicated account and one registered IP address there, an approved Slack app, and a cloud environment the team may build in (section 7) |
 
-## 2. Problem and constraint
+## 2. The use case
 
-A group of staff repeat one task on a web application many times a day: sign in, fill in a multi-step form, check it, submit. The web application has no usable API. Submitting cannot be undone: a wrong submission is a wrong record in someone else's system.
+Staff repeat the same entry work in internal and partner web applications: registering a visitor, booking a resource, filing a request. The information fits in one sentence. The work is typing it into many fields over several screens.
 
-One constraint decides the infrastructure: **the web application accepts connections only from registered IP addresses.** Every outbound connection has to leave from one fixed address, which is why this POC, and only this POC, needs the NAT Gateway described in the deployment document.
+Where the application offers an API, a system can do this directly. Many do not, and some also accept connections only from IP addresses registered in advance. This concept is for those.
 
-The approach fits when:
+The example that was built is a visitor registration: fifteen fields over a three-step form, on a simulated website with the kind of rules a real one has. One of those rules only the website can check: two registrations that overlap.
 
-- The task has repeatable steps and well-structured input.
-- The web application has no usable API. Where an API exists, calling it is cheaper and lasts longer than driving a browser.
-- The web application's owner allows automated use through an issued account, and will register an IP address.
-- A delay of a few seconds to a few tens of seconds per request is acceptable.
-
-It does not fit when:
-
-- The web application blocks automation with a CAPTCHA, or asks for a one-time code at every sign-in.
-- Its terms of use forbid automated access.
-- Its screens change often without notice, and nobody owns the maintenance of the script.
-- The volume is large enough to need batch processing.
-
-Other ways to approach the problem:
-
-| Option | Why not here |
+| The concept fits when | It does not fit when |
 |---|---|
-| Ask the web application's owner for an API | The best answer where it exists. This POC is for when it does not |
-| A commercial RPA tool | Strong for processes on personal computers. For one web task it adds licence fees and a platform to run |
-| Let an LLM drive the browser on its own | Flexible, but slow, costly, and not guaranteed to do the same thing every time. For a structured, repeated task a fixed script is more dependable |
+| The steps are the same every time and the input is structured | The volume comes in large batches |
+| The web application offers no usable API | An API exists. Use it |
+| Its owner allows automated use through an account issued for that purpose, and will register one IP address | Its terms forbid automated use |
+| A wait of a few seconds is acceptable | Every sign-in asks for a CAPTCHA or a one-time code |
+| Someone will maintain the automation when the screens change | The screens change often and nobody owns the upkeep |
+
+Three alternatives were considered. Asking the owner for an API is the best answer wherever one can be had. A commercial RPA product brings a licence and a platform to run for a single task. Letting the LLM operate the browser by itself is slow, costs more per request and does not behave the same way twice.
 
 ## 3. How it works
 
+1. The requester types a command in Slack followed by one sentence, for example "Mr Tanaka from Acme, tomorrow at 2 pm, head office, floor 12".
+2. A form opens in Slack, pre-filled by the LLM from that sentence. The requester corrects whatever is wrong. If the LLM is unavailable, the form opens empty and the rest works the same.
+3. The system checks the rules it knows. A fixed browser script then signs in to the web application with a dedicated account and fills in the form, as far as the confirmation screen.
+4. The system reads the confirmation screen back and compares it with what was asked. If the two differ, it stops and names the fields.
+5. The requester receives a screenshot of the confirmation screen in a direct message, with three choices: approve, edit or cancel.
+6. On approval, and only then, the system submits and returns the reference number. Without an answer within ten minutes, the browser is closed and nothing is submitted.
+
 ```mermaid
-flowchart LR
-    A[1. A staff member describes the request in Slack] --> B[2. The system pre-fills a form for them to check]
-    B --> C[3. The system signs in to the web app and fills in the form]
-    C --> D[4. The staff member sees a screenshot of the confirmation screen]
-    D -->|Approve| E[5. The system submits and returns the reference number]
-    D -->|Edit or cancel| B
+sequenceDiagram
+    actor R as Requester
+    participant S as System
+    participant L as LLM
+    participant W as Web application
+
+    R->>S: One sentence, in Slack
+    S->>L: The sentence
+    L-->>S: Suggested form values
+    S-->>R: Pre-filled form
+    R->>S: Checked form
+    S->>W: Sign in and fill in the form
+    W-->>S: Confirmation screen
+    S->>S: Read back and compare
+    S-->>R: Screenshot, with approve, edit, cancel
+    R->>S: Approve
+    S->>W: Submit
+    W-->>S: Reference number
+    S-->>R: Reference number
 ```
 
-### 3.1 Components
+## 4. What it is made of
+
+One small system runs in the organisation's own AWS environment. It opens its connection to Slack from the inside, so nothing in it is reachable from the internet.
 
 ```mermaid
 flowchart LR
-    U[Requester]
-    SL[Slack]
-    OR[LLM provider<br/>Amazon Bedrock or OpenRouter]
-    WA[Target web app<br/>accepts registered IPs only]
-
+    U[Staff member] --- SL[Slack]
     subgraph AWS[The organisation's AWS environment]
-        SM[AWS Secrets Manager<br/>web app account, Slack tokens, LLM key]
-        CW[Amazon CloudWatch Logs]
-        ECR[Amazon ECR]
-        subgraph VPC[Amazon VPC]
-            subgraph TASK[Amazon ECS on AWS Fargate: one task in a private subnet]
-                SE[Slack entry<br/>command, form, buttons]
-                FD[Field definitions]
-                PF[LLM pre-fill]
-                JS[Job service<br/>jobs awaiting approval, in memory]
-                BW[Browser worker<br/>Playwright and Chromium]
-                SS[Secret store]
-            end
-            NAT[NAT Gateway<br/>with one Elastic IP]
-        end
+        APP[Slack app]
+        BW[Browser worker]
+        LLM[Amazon Bedrock<br/>the LLM]
+        OUT[Fixed outbound<br/>IP address]
     end
-
-    U <--> SL
-    SL <-->|Socket Mode| SE
-    SE --> PF
-    SE --> JS
-    FD -.->|form, prompt and fill are generated from it| SE
-    FD -.-> PF
-    FD -.-> BW
-    JS --> BW
-    BW --> SS
-    PF -->|one sentence| NAT
-    BW -->|sign in, fill, submit| NAT
-    SE --> NAT
-    NAT -->|from the registered IP| WA
-    NAT --> OR
-    NAT --> SL
-    SM -.->|at task start| SS
-    ECR -.->|image| TASK
-    JS -.->|job events| CW
+    SL <--> APP
+    APP --> LLM
+    APP --> BW
+    BW --> OUT
+    OUT --> WEB[Web application<br/>registered addresses only]
 ```
 
-AWS services in this POC: ECS on Fargate, ECR, Secrets Manager, CloudWatch Logs and an IAM execution role, all run on 2026-10-05; and a VPC with a NAT Gateway and an Elastic IP, which this POC requires for the registered IP address, run on 2026-10-11 together with an IAM task role for Amazon Bedrock. In both trials the mock portal ran as a second container in the same task, in place of the target web app.
-
-| Component | Responsibility | In the repo |
-|---|---|---|
-| Slack entry | Receives `/visitor`, opens the form, returns per-field errors, sends the screenshot and the approval buttons | `src/slack/slack-handlers.js`, `src/slack/registration-modal.js` |
-| Field definitions | Fields, input types, normalisation, validation rules, display | `src/core/registration-fields.js` |
-| LLM pre-fill | Turns a free-text request into suggested values; drops malformed values | `src/llm/parse-free-text-request.js` |
-| Job service | Lifecycle of one request: validation, duplicate check, the session awaiting approval, expiry, who may approve | `src/core/registration-service.js` |
-| Browser worker | Signs in, operates the site, compares the confirmation screen, submits once approved | `src/worker/portal-browser-session.js` |
-| Secret store | Sign-in credentials for the web application; the source can change without touching the worker | `src/core/secret-store.js` |
-| Target web application | In the POC, a simulated website | `src/mock-portal/` |
-
-### 3.2 Sequences
-
-**Main flow**, with the three ways a waiting request ends:
-
-```mermaid
-sequenceDiagram
-    actor U as User
-    participant S as Slack
-    participant A as Slack entry + Job service
-    participant L as LLM
-    participant W as Browser worker
-    participant T as Target web app
-
-    U->>S: command with a free-text request
-    A->>L: read the request
-    A->>S: pre-filled form
-    U->>S: check, edit, submit the form
-    A->>A: validate, check for duplicates
-    A->>W: create job
-    W->>T: sign in, operate up to the confirmation screen
-    W->>T: read back and compare
-    A->>S: screenshot + Submit / Edit / Cancel
-    alt Submit
-        W->>T: click submit
-        A->>S: reference number
-    else Edit
-        A->>S: reopen the form with the pending data
-        A->>W: close the old session, start again
-    else Cancel or expiry
-        A->>W: close the session, submit nothing
-    end
-```
-
-**Stops and rejections.** Every branch ends with nothing submitted:
-
-```mermaid
-sequenceDiagram
-    actor U as User
-    participant S as Slack
-    participant A as Slack entry + Job service
-    participant L as LLM
-    participant W as Browser worker
-    participant T as Target web app
-
-    U->>S: command with a free-text request
-    A->>L: read the request
-    alt the LLM fails or returns a bad format
-        A->>S: empty form with a note
-    else
-        A->>S: pre-filled form
-    end
-    U->>S: send the form
-    alt a field breaks a rule known in advance
-        A->>S: error shown on the field, the browser does not run
-    else the same requester already has this request
-        A->>S: rejected, with the reference number if it was submitted
-    else the form is valid
-        A->>W: create job
-        W->>T: sign in
-        alt sign-in fails, or a CAPTCHA or one-time code is asked for
-            W-->>A: stop
-            A->>S: a person is needed
-        else signed in
-            W->>T: fill the form
-            alt the web app rejects by its own rule
-                T-->>W: error on the page
-                A->>S: the web app's message, word for word
-            else the confirmation screen differs from the request
-                W-->>A: mismatched fields
-                A->>S: stopped, the fields are named, no approval offered
-            else the confirmation screen matches
-                A->>S: screenshot + Submit / Edit / Cancel
-                alt someone other than the requester clicks
-                    A->>S: rejected
-                else nobody approves within 10 minutes
-                    A->>W: close the browser
-                end
-            end
-        end
-    end
-```
-
-**Where the traffic goes on AWS.** One request, seen from the network:
-
-```mermaid
-sequenceDiagram
-    participant S as Slack
-    participant P as Fargate task
-    participant N as NAT Gateway (Elastic IP)
-    participant L as LLM provider
-    participant T as Target web app
-
-    Note over P,S: The WebSocket was opened by the task at start-up, through the NAT Gateway
-    S->>P: command event, over the open WebSocket
-    P->>N: HTTPS to the LLM provider
-    N->>L: from the Elastic IP
-    L-->>P: suggested values
-    P->>N: HTTPS to Slack's API (form, messages, screenshot)
-    N->>S: from the Elastic IP
-    P->>N: HTTPS from the browser
-    N->>T: from the Elastic IP, the only address the web app accepts
-    T-->>P: pages
-    Note over P: Secrets Manager and CloudWatch Logs are not called by the application.<br/>ECS read the secret before the process started and ships stdout as logs
-```
-
-The browser stays open on the confirmation screen while the job waits for approval. What the user sees in the screenshot is exactly what gets submitted; no second fill happens in between. The consequence: job state lives in the memory of one process, and the platform must run exactly one copy of it.
-
-## 4. Design rules of this POC
-
-These add to the rules every POC keeps (architecture document, section 5).
-
-| Rule | What it means | Why |
-|---|---|---|
-| The requester approves the exact screen | Automation stops at the confirmation screen. Only the person who asked can approve, edit or cancel | A mistake while filling can be fixed; a mistake after submitting cannot |
-| The LLM only pre-fills | What reaches the web application is what the user reviewed in the Slack form | LLM output is not stable enough to create a transaction |
-| One definition of the data | The Slack form, the LLM prompt and the browser fill are all generated from `registration-fields.js` | Adding a field means changing one place |
-| Validate early, then validate again | Rules known in advance are checked in Slack. Rules only the web application knows are read from its error message and passed on word for word | The user gets the error on the right field without waiting for the browser |
-| Read back before trusting | After filling, the worker reads the confirmation screen and compares it with the requested data | Catches wrong fills, drifted selectors and values the web application changed by itself |
-| Never submit twice | Each request has a key built from the requester and the content; duplicates are rejected | Slack can redeliver events, and users can click twice |
-| Details go by direct message | The screenshot and the result go to the requester; the shared channel gets one line saying the request was received | The shared channel includes people who are not involved |
-
-## 5. Error handling
-
-| Situation | Behaviour |
+| Component | Role |
 |---|---|
-| Data breaks a rule known in advance | The Slack form shows the error on the field; the browser does not run |
-| The web application rejects by its own rule | The worker reads the error on the page; Slack shows it word for word |
-| The confirmation screen differs from the requested data | Stop, name the mismatched fields, do not allow approval |
-| Sign-in fails | Stop and report; the password does not appear in the log |
-| The web application asks for a CAPTCHA or a one-time code | Stop and report that a person is needed |
-| Duplicate request | Reject, with the reference number if it was already submitted |
-| Someone else clicks approve, edit or cancel | Reject |
-| Nobody approves within `APPROVAL_TTL_SECONDS` (default 10 minutes) | Close the browser, submit nothing |
-| Edit after the original was submitted or cancelled | Do not apply the change and do not create a second request |
-| The LLM cannot read the request or returns a bad format | The form opens empty with a note, and the user fills it in |
+| Slack app | Receives the command, shows the form, sends the screenshot and takes the approval |
+| LLM | Turns the sentence into suggested form values. Optional. On AWS it is a model on Amazon Bedrock, so the sentence stays inside AWS |
+| Browser worker | A fixed script, not an LLM: signs in, fills in the form, reads the confirmation back, submits |
+| Container service | Keeps one small container running at all times. The browser runs inside it |
+| Fixed outbound IP address | Everything the system sends to the web application leaves through one address, which the owner registers |
+| Secret store and logs | Hold the Slack credentials and the web application account. Secrets are removed from the log |
 
-## 6. Switching to the real web application (not run)
+## 5. Safeguards
 
-The AWS side of the switch is in [03-aws-deployment.md](../03-aws-deployment.md), section 8. The agreements to obtain from the web application's owner are in [05-prerequisites-and-access.md](../05-prerequisites-and-access.md), section 7.
-
-### 6.1 Work outside the code
-
-- Written approval from the web application's owner for automated access.
-- A dedicated automation account with minimum permissions, exempt from CAPTCHA and one-time codes. Everything done on the web application will be recorded under this account, so the platform's log has to say who in Slack made each request.
-- The owner registers the platform's outbound IP address.
-
-### 6.2 Work in the code
-
-The framework stays; three places are rewritten:
-
-1. **Field definitions** (`src/core/registration-fields.js`). Declare the fields, input types and rules of the new task. The Slack form and the LLM prompt follow from them.
-2. **Browser worker** (`src/worker/`). Rewrite the sign-in, the steps, the confirmation-screen read and the submit. Keep the boundary: one function that goes as far as the stopping point (`fillToConfirmation`), and a separate one for the irreversible step (`submit`).
-3. **Command name and Slack wording** (`src/slack/`, `slack-app-manifest.yaml`).
-
-If the task has no confirmation screen of its own, create the stopping point: stop before the last button, take a screenshot and read back the fields that were filled.
-
-Advice on the browser script:
-
-- Prefer what a user sees (label, role, button name) over CSS classes and page structure. They change less often.
-- Wait on page state (an element appears, the options have loaded), not on fixed delays.
-- Always read back. When the screen changes, this turns a silent fault into a reported one.
-- Run a test request on a schedule, up to the stopping point, then cancel it, to learn early when the web application changes.
-
-A second web application means a second set of these three parts. The repository holds one today, and nothing in it yet selects between several.
-
-## 7. What was verified
-
-On AWS, 2026-10-05, 5 requests from Slack to the mock portal:
-
-| Question | Result |
+| Concern | What the design does |
 |---|---|
-| How long does a staff member wait? | About 3 seconds from sending the form to receiving the confirmation screenshot |
-| Was anything submitted without approval? | No. The two approved requests received reference numbers; the two cancelled requests submitted nothing |
-| What happens when the web application rejects a request? | The staff member received the web application's own error message |
-| Does it use much capacity? | Peak use was about 10% of the 2 GB allocated |
+| Something is submitted that nobody checked | Nothing is submitted without approval of the exact screen. Only the person who asked can approve, edit or cancel |
+| The LLM is wrong, or is steered by the text it reads | The LLM only suggests form values, and the requester reviews them. It never starts an action, and the request text is treated as data, not as instructions |
+| The web application shows something other than what was asked | The read-back stops the request and names the fields that differ |
+| The same request is submitted twice | A repeated request is refused, with the reference of the first |
+| The web application rejects the request | Its own message is passed on to the requester word for word |
+| Sign-in meets a CAPTCHA or a one-time code | The system stops and says a person is needed. It does not try to get around them |
+| Personal data shows up where it should not | The details and the screenshot go to the requester by direct message, not to a channel |
 
-The verification record is in [03-aws-deployment.md](../03-aws-deployment.md), section 9. Latency was measured with the mock portal in the same task; against a real web application it will depend mostly on that application.
+## 6. What was verified
 
-Locally, `npm test` covers the field rules, the browser flow against the mock portal, the Slack flow with a fake Slack client, and ten free-text requests in English, Vietnamese and Japanese read by the real model.
+Every run used the simulated website.
 
-## 8. Risks and gaps to production
+| Run | Result |
+|---|---|
+| Automated tests on a workstation, with a real browser | The form rules, the browser steps and the Slack exchange behave as described |
+| On AWS, 2026-10-05, without a fixed IP address, five requests from Slack | Nothing was submitted without approval: the two approved requests received reference numbers, the two cancelled requests submitted nothing. When the website rejected a request, its own message reached the requester |
+| On AWS, 2026-10-11, behind a fixed IP address, with the LLM on Amazon Bedrock | The address the system leaves through was confirmed to be the fixed one. A request from Slack was approved and submitted; the same request sent again was refused as a duplicate |
 
-Risks specific to this POC:
+Measured: one to 2.5 seconds from the sentence to the pre-filled form, about four seconds from the form to the screenshot, about 40 seconds for the system to start, and a peak of about 10% of the memory allocated. No secret was found in the log.
 
-| Risk | Impact | How it is handled |
+**The LLM works, and is not yet good enough.** An acceptance test of ten sentences covers English, Vietnamese, Japanese, abbreviations, missing information and an instruction written in place of a request. A small model from an outside provider (DeepSeek V4.1 Flash through OpenRouter) passed ten. The model tried on Amazon Bedrock (GLM 4.7 Flash) passed seven: one date a day off, one floor missed, one building guessed. None of these can reach the website unseen, because the requester reviews the form and the screenshot, but each is a correction the requester has to make.
+
+**Not verified:**
+
+- A real web application, single sign-on, or a CAPTCHA.
+- Several requests waiting for approval at the same time, and recovery after the system restarts.
+- The ten-minute expiry on AWS.
+
+## 7. What the team needs to be granted
+
+Most of the time between a decision and a running system is spent waiting for these. They can be requested in parallel.
+
+| # | What | From whom | Notes |
+|---|---|---|---|
+| 1 | Written agreement to automated use of the web application | The web application's owner | Without it, do not start. Automated access may be against the terms of use |
+| 2 | A dedicated account on the web application, with the least permissions the task needs, exempt from CAPTCHA and one-time codes | The web application's owner | Everything done there is recorded under this account. Ask as well for a test environment or agreed test records, and for notice when screens change |
+| 3 | One IP address added to the web application's list of allowed addresses | The web application's owner | The address is known only once the cloud environment exists, and it changes if that environment is removed |
+| 4 | Approval to install a custom Slack app | Slack workspace administrator | The app receives its own command, posts messages, sends direct messages and uploads the screenshot. It cannot read channels or messages. Permission names for the approver: `commands`, `chat:write`, `im:write`, `files:write` |
+| 5 | An AWS account or sandbox, in one Region, where the team may build | Cloud or platform team | The team creates a private network with a fixed public IP address (VPC, NAT Gateway, Elastic IP), a container service (ECS on Fargate, ECR), one secret, logs and two service roles, all through CloudFormation |
+| 6 | Use of Amazon Bedrock for the chosen model | Cloud team, and AWS | Three conditions: the model is offered in the Region, the model provider's agreement is accepted, and the account is allowed to use Bedrock. In some accounts only AWS Support can lift the last one, which makes it the longest wait on the cloud side |
+| 7 | A decision that the request sentence may be sent to the LLM | Data owner or security | The sentence can hold a visitor's name, company and phone number. The screenshot, with the same data, is stored in Slack |
+| 8 | Named owners | Leadership | One person for the deployment and its credentials, and one to maintain the browser script when the web application changes |
+
+Not needed: any permission to read Slack messages, access to Jira or Confluence, or any opening from the internet into the organisation's network.
+
+## 8. Cost
+
+Example figures from AWS list prices in one Region (Asia Pacific, Sydney) in October 2026, in USD, before tax and discounts.
+
+| Situation | USD per month |
+|---|---|
+| Running all month behind a fixed IP address | about 82 |
+| Running all month without a fixed IP address | about 39 |
+| Stopped, with the network and the address kept | about 47 |
+| Removed, with only the stored image and secret kept | about 0.5 |
+| Everything removed | 0 |
+
+- The cost is fixed. It pays for a container that is always on and for the network, and it does not grow with the number of requests at this scale.
+- The fixed IP address is more than half of it: about 47 of the 82 USD. Only a web application that restricts by address needs it.
+- The LLM is negligible: about 0.05 USD for 500 requests a month, and under 2 USD with a model forty times the price.
+- A second environment, for example test and production, doubles the total and needs a second address registered.
+- People are not in these figures: writing the browser script for each real web application, and maintaining it.
+
+## 9. Risks and what remains
+
+| Risk | Effect | Answer |
 |---|---|---|
-| The web application changes its screens | The system stops filling in the form until an engineer updates the script | The read-back turns a changed screen into a clear error and not a wrong submission. Someone must own the maintenance |
-| The web application asks for a CAPTCHA or a one-time code | The system stops and reports that a person is needed | Agree with the owner on a dedicated account that skips these steps |
-| The web application's terms forbid automated access | Legal risk and a locked account | Written approval before running against the real web application |
-| Personal data in screenshots and request text | Compliance responsibility | Rules for where it is stored, how long it is kept and who may see it |
-| Other workloads share the fixed IP address | Anything in the same private subnet reaches the web application from the registered address | Keep that network for this system alone |
+| The web application changes its screens | The system stops filling in the form until the script is updated | The read-back turns a changed screen into a clear error, not a wrong submission. Someone must own the upkeep |
+| A CAPTCHA or a one-time code is introduced | The system stops and asks for a person | Agree a dedicated account that is exempt |
+| The terms of the web application forbid automated use | Legal exposure and a locked account | Written agreement first |
+| Personal data in the request text and the screenshots | A compliance duty | Rules on where they are stored, for how long, and who may see them |
+| Other systems share the fixed IP address | They would reach the web application from the registered address | Keep that network for this system alone |
 
-Work needed for a production version, beyond the platform's own list (architecture document, section 8):
+The POC is not a production system. Before it serves more than a pilot group it needs:
 
-| Area | Now | Needed |
-|---|---|---|
-| Job state | In the memory of one process; a restart loses requests waiting for approval | Durable state; a waiting job stores data and does not hold a browser |
-| Browser during approval | Each waiting job holds a browser | A limit on waiting jobs; or close the browser and fill again on approval, with a read-back |
-| Audit | JSON log | A record of who asked, who approved, when, and the reference number |
-| Monitoring | None | A scheduled test request that stops before submitting |
-| Sign-in session | Signs in again for every job | Reuse the session where the web application allows it, to reduce load and the risk of a locked account |
-| Image | Playwright base image with three browsers | Chromium only, to cut size and pull time |
+- a list of who may use it (today, anyone in the workspace can);
+- a durable record of requests waiting for approval (today they are held in memory and lost on a restart);
+- an audit record of who asked, who approved and when;
+- monitoring, with a scheduled test request that stops before submitting;
+- a model that passes the whole acceptance test;
+- deployment through a reviewed pipeline, and a rotation schedule for the credentials.
+
+## 10. Next steps
+
+1. Choose one real web application and obtain its owner's agreement (section 7, items 1 to 3).
+2. Send the Slack, cloud and Bedrock requests at the same time (items 4 to 6). They have the longest waits.
+3. Adapt the form definition and the browser script to that application, and run them against its test environment.
+4. Choose the model on quality, with the acceptance test.
+5. Close the gaps in section 9 before widening the group of users.
+
+## 11. Where the detail is
+
+This document stops at the concept. The sample implementation, the steps to run it, and the documents shared by all POCs are in the project's GitHub repository: start with the [README](../../README.md), then the platform's [overview](../01-platform-overview.md), [architecture](../02-platform-architecture.md), [AWS deployment](../03-aws-deployment.md), [operating cost](../04-operating-cost.md) and [prerequisites and access](../05-prerequisites-and-access.md).

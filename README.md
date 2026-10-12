@@ -20,6 +20,8 @@ Mỗi POC có tài liệu riêng:
 - [docs/poc/01-web-form-automation.md](docs/poc/01-web-form-automation.md)
 - [docs/poc/02-daily-report.md](docs/poc/02-daily-report.md)
 
+Mỗi tài liệu POC mô tả một concept đã kiểm chứng, viết cho người ra quyết định và không kèm code: use case, cách hoạt động, các thành phần, các cơ chế an toàn, kết quả kiểm chứng, những quyền cần cấp cho team, ước tính chi phí, rủi ro và bước tiếp theo. Chi tiết kỹ thuật (module, cấu hình, triển khai AWS, bảng giá, danh sách quyền đầy đủ) nằm trong tài liệu 1 đến 5 và trong source code.
+
 README này chỉ nói cách chạy; mọi giá trị riêng của từng môi trường (token, kênh, site Jira, AWS profile, Region) nằm trong `.env` và `infra/local.env`, cả hai đều không được commit.
 
 ## Chạy ở local
@@ -87,7 +89,7 @@ npm run seed -- <channel ID> --post      # đăng 25 tin nhắn mẫu vào kênh
 npm run report                           # in báo cáo ra terminal
 ```
 
-Bỏ `--post` thì hai lệnh seed chỉ in ra những gì sẽ tạo. Mỗi issue mẫu là một tình huống báo cáo cần xử lý; bảng tình huống và kết quả nằm trong [docs/poc/02-daily-report.md](docs/poc/02-daily-report.md), mục 7. Lệnh seed vào kênh cần scope `chat:write.customize` (đã có trong manifest).
+Bỏ `--post` thì hai lệnh seed chỉ in ra những gì sẽ tạo. Mỗi issue mẫu là một tình huống báo cáo cần xử lý; bảng tình huống và kết quả nằm trong [docs/02-platform-architecture.md](docs/02-platform-architecture.md), mục 7; bản tóm tắt theo nhóm kết quả nằm trong [docs/poc/02-daily-report.md](docs/poc/02-daily-report.md), mục 6. Lệnh seed vào kênh cần scope `chat:write.customize` (đã có trong manifest).
 
 Báo cáo luôn được đăng vào `REPORT_POST_CHANNEL`, không gửi riêng cho người gõ lệnh. Nội dung chat và issue được gửi tới LLM đã chọn (OpenRouter hoặc Amazon Bedrock) để viết báo cáo. Trả lời trong một thread cũ (mở từ ngày trước) không được đọc.
 

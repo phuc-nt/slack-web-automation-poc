@@ -223,7 +223,7 @@ The three failures were the same on every run: the visit date is one day off in 
 
 ## 8. Switching the web form POC to a real web app (not run)
 
-Suggested order: deploy with the mock portal, confirm the outbound IP (4.1), register the address with the web app's owner, then switch. That keeps infrastructure faults apart from worker faults. The code changes are in [poc/01-web-form-automation.md](poc/01-web-form-automation.md), section 6.
+Suggested order: deploy with the mock portal, confirm the outbound IP (4.1), register the address with the web app's owner, then switch. That keeps infrastructure faults apart from worker faults. The code changes are in [02-platform-architecture.md](02-platform-architecture.md), section 3.4; what to obtain from the web app's owner first is in [poc/01-web-form-automation.md](poc/01-web-form-automation.md), section 7.
 
 On the AWS side:
 

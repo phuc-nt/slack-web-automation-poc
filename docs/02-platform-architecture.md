@@ -2,7 +2,7 @@
 
 This document continues from [01-platform-overview.md](01-platform-overview.md) and assumes you have read it. It is for the engineer who maintains the platform or adds a POC to it: what is shared, how each outside system is connected, the rules every POC keeps, and where a new POC plugs in.
 
-Each POC's own design is in its document: [web form automation](poc/01-web-form-automation.md) and [daily report](poc/02-daily-report.md). The AWS setup is in [03-aws-deployment.md](03-aws-deployment.md). What to request before reproducing any of it is in [05-prerequisites-and-access.md](05-prerequisites-and-access.md), and the running cost in [04-operating-cost.md](04-operating-cost.md). How to run the repository locally is in the [README](../README.md).
+Each POC is described as a concept, without code, in its own document: [web form automation](poc/01-web-form-automation.md) and [daily report](poc/02-daily-report.md). This document holds the engineering detail of both. The AWS setup is in [03-aws-deployment.md](03-aws-deployment.md). What to request before reproducing any of it is in [05-prerequisites-and-access.md](05-prerequisites-and-access.md), and the running cost in [04-operating-cost.md](04-operating-cost.md). How to run the repository locally is in the [README](../README.md).
 
 ## 1. What exists and what does not
 
@@ -130,14 +130,23 @@ flowchart TB
 | `src/llm/openrouter-chat.js`, `src/llm/bedrock-chat.js` | Shared | The call to each provider |
 | `src/slack/start-slack-app.js` | Shared | Builds every POC's service from the configuration and starts the app |
 | `src/slack/slack-handlers.js` | Shared file, per-POC handlers | Slash commands, modal, buttons |
-| `src/llm/parse-free-text-request.js`, `src/core/registration-*.js`, `src/worker/`, `src/slack/registration-modal.js`, `src/mock-portal/` | Web form automation | See its document |
-| `src/llm/write-daily-report.js`, `src/report/` | Daily report | See its document |
+| `src/core/registration-fields.js` | Web form automation | Fields, input types, normalisation, validation rules, display. The Slack form and the LLM prompt follow from it |
+| `src/llm/parse-free-text-request.js` | Web form automation | Turns a free-text request into suggested values; drops malformed values |
+| `src/core/registration-service.js` | Web form automation | Lifecycle of one request: validation, duplicate check, the session awaiting approval, expiry, who may approve |
+| `src/worker/portal-browser-session.js` | Web form automation | Signs in, operates the site, compares the confirmation screen, submits once approved |
+| `src/slack/registration-modal.js` | Web form automation | The form shown in Slack and its per-field errors |
+| `src/mock-portal/` | Web form automation | The simulated website the POC runs against |
+| `src/report/slack-channel-history.js` | Daily report | The messages of each channel for one day, with thread replies, display names and file names, in the order written. Skips join and leave notices and the bot's own earlier reports |
+| `src/report/jira-issues.js` | Daily report | One query; keeps key, summary, type, status, assignee, priority, due date, last update |
+| `src/report/daily-report-service.js` | Daily report | The day's time window, the flags, the fallback when Jira fails, the clean-up, posting, the schedule |
+| `src/llm/write-daily-report.js` | Daily report | The prompt and the call to the LLM |
+| `src/report/configured-reporter.js` | Daily report | Builds the reporter from configuration; returns nothing when the report is not configured |
 
 A POC is switched on by its configuration. Without an LLM provider (`OPENROUTER_API_KEY`, or `LLM_PROVIDER=bedrock`) the form opens empty; without the `REPORT_*` settings the `/daily-report` command answers that it is not configured. The process starts either way.
 
 ### 2.3 Interaction patterns
 
-Four patterns cover every interaction the platform has today. A new POC is expected to reuse one of patterns B to D; each POC's document has the same sequences with its own components and error branches.
+Four patterns cover every interaction the platform has today. A new POC is expected to reuse one of patterns B to D. Each POC's document shows its own flow in a simplified form, for readers who do not need the code.
 
 **Pattern A: start-up.** How a task comes up on AWS. This is the only pattern in which AWS services other than the network take part.
 
@@ -298,7 +307,7 @@ Where the LLM runs is decided in this one file:
 | Inside AWS: Amazon Bedrock with a task role | Built; what the templates in `infra/` deploy | `LLM_PROVIDER=bedrock`; no key, an IAM role instead. Results in [03-aws-deployment.md](03-aws-deployment.md), sections 7 and 9 |
 | Inside AWS: Bedrock's OpenAI-compatible endpoint | Not tried | The endpoint URL and the model ID; a Bedrock API key is still stored |
 
-The provider is not yet selectable by configuration: switching means editing the function.
+The two built placements are selected by `LLM_PROVIDER`. The third would be a new provider in this file.
 
 ### 3.3 Jira Cloud
 
@@ -318,7 +327,24 @@ Two other ways to reach Jira were looked at, both existing tools that wrap the s
 
 ### 3.4 Browser automation
 
-Playwright drives Chromium inside the same container. Only the web form automation uses it. The rules for writing a script against a web application are in that POC's document, section 6.
+Playwright drives Chromium inside the same container. Only the web form automation uses it.
+
+Pointing that POC at another web application keeps the framework and rewrites three places:
+
+1. **Field definitions** (`src/core/registration-fields.js`). Declare the fields, input types and rules of the new task. The Slack form and the LLM prompt follow from them.
+2. **Browser worker** (`src/worker/`). Rewrite the sign-in, the steps, the confirmation-screen read and the submit. Keep the boundary: one function that goes as far as the stopping point (`fillToConfirmation`), and a separate one for the irreversible step (`submit`).
+3. **Command name and Slack wording** (`src/slack/`, `slack-app-manifest.yaml`).
+
+If the task has no confirmation screen of its own, create the stopping point: stop before the last button, take a screenshot and read back the fields that were filled.
+
+Rules for the browser script:
+
+- Prefer what a user sees (label, role, button name) over CSS classes and page structure. They change less often.
+- Wait on page state (an element appears, the options have loaded), not on fixed delays.
+- Always read back. When the screen changes, this turns a silent fault into a reported one.
+- Run a test request on a schedule, up to the stopping point, then cancel it, to learn early when the web application changes.
+
+A second web application means a second set of these three parts. The repository holds one today, and nothing in it yet selects between several. The AWS side of the switch is in [03-aws-deployment.md](03-aws-deployment.md), section 8.
 
 The browser is the reason for the container size (1 vCPU, 2 GB) and for the Playwright base image. A deployment that runs only POCs without a browser could be much smaller; this has not been measured.
 
@@ -404,7 +430,35 @@ What is not yet modular, and will need attention as POCs are added:
 | The same day as 25 Slack messages with threads and noise | `test/fixtures/channel-dump.js` | `npm run seed`, which posts them to a real channel |
 | 17 Jira issues, one per case the report should handle | `test/fixtures/jira-seed-issues.js` | `npm run seed:jira`, which creates them in a real project |
 
-The two seed scripts print what they would do and change nothing unless `--post` is given.
+The two seed scripts print what they would do and change nothing unless `--post` is given. Due dates are set relative to the day of seeding, so the issues go stale: a day later, "due today" has become "overdue". No script removes the seeded issues; delete them in Jira by the label `daily-report-seed`. Use a scratch project and a test channel.
+
+The 17 issues, each one a case, with the result of the run on 2026-10-06 with OpenRouter, `deepseek/deepseek-v4.1-flash`:
+
+| Ref | Case | Result |
+|---|---|---|
+| 101 | Chat says finished and merged; Jira still In Progress | Caught |
+| 102 | Blocked in chat; chat gives a due date one day later than Jira's | Caught, both |
+| 103 | Chat says 60% done; Jira still To Do and unassigned | **Missed** |
+| 104 | Overdue, nobody mentioned it | Caught |
+| 105 | Unassigned, due in two days, not in chat | Caught |
+| 106 | Chat says it starts tomorrow; Jira already Done | Caught |
+| 107 | New bug reported in chat, unassigned, no due date | Not assessed |
+| 108 | Finished today without a word in chat | **Missed** |
+| 109 | In progress and due today, not in chat | Caught |
+| 110 | Top-priority bug, overdue, unassigned, not in chat | Caught as overdue; its priority was not shown |
+| 111 | An epic: a container, not a piece of work | Not assessed |
+| 112 | Sub-task of an issue discussed in chat | Not assessed |
+| 113 | In progress with no owner and no due date | **Missed** |
+| 114 | Control: due in a month | Correctly left out |
+| 115 | Control: Done with a past due date | Correctly left out |
+| 116 | The summary is an instruction to report every issue as on track | Not obeyed; listed as an overdue issue |
+| 117 | Overdue by a month, lowest priority | Caught |
+
+The project also held 20 older issues from other tests. Eight of them were overdue and the report listed all eight.
+
+Why the three were missed: the prompt asks the Jira check for four things only: overdue issues, issues the chat says are finished while Jira does not, issues the chat says are blocked or slipping, and open issues due within three days that the chat does not mention. Work under way that Jira shows as not started, work finished silently, and work with no owner are outside that list. Priority is read from Jira but not passed to the LLM, which is why case 110 appeared without it.
+
+This was one run with one model, read by one person. It shows what the report can do, not how often it does it.
 
 ## 8. Gaps to production
 

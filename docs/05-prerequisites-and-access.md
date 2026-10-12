@@ -2,6 +2,8 @@
 
 This document is for whoever prepares to reproduce the POCs in their own organisation. It lists every tool, service and feature the platform uses, and for each one what has to be installed, registered or granted, and by whom. Most of the waiting time in a reproduction is in these requests, so send them first.
 
+This document covers the platform as a whole, with the full detail of each item. Each POC's document has the short list for that POC, written for whoever approves the requests: [web form automation](poc/01-web-form-automation.md), section 7, and [daily report](poc/02-daily-report.md), section 7.
+
 How to deploy once everything is in place is in [03-aws-deployment.md](03-aws-deployment.md). The local run is in the [README](../README.md).
 
 ## 1. What each stage needs
@@ -146,7 +148,7 @@ The defaults of a normal account are enough. Check them in a new or shared accou
 | Elastic IP addresses in the Region | 1 |
 | VPCs in the Region | 1 |
 | NAT Gateways in the Availability Zone | 1 |
-| Bedrock on-demand tokens per minute for the model | A few thousand; the platform makes one call at a time |
+| Bedrock on-demand tokens per minute for the model | A few thousand for a form request; about 7,000 for a daily report of the measured size, up to about 45,000 for one at its upper bound. The output tokens a call allows count in full. The platform makes one call at a time |
 
 ## 7. The target web application
 

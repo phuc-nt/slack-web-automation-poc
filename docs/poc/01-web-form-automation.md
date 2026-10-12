@@ -34,63 +34,130 @@ Three alternatives were considered. Asking the owner for an API is the best answ
 
 ## 3. How it works
 
-1. The requester types a command in Slack followed by one sentence, for example "Mr Tanaka from Acme, tomorrow at 2 pm, head office, floor 12".
-2. A form opens in Slack, pre-filled by the LLM from that sentence. The requester corrects whatever is wrong. If the LLM is unavailable, the form opens empty and the rest works the same.
-3. The system checks the rules it knows. A fixed browser script then signs in to the web application with a dedicated account and fills in the form, as far as the confirmation screen.
-4. The system reads the confirmation screen back and compares it with what was asked. If the two differ, it stops and names the fields.
-5. The requester receives a screenshot of the confirmation screen in a direct message, with three choices: approve, edit or cancel.
-6. On approval, and only then, the system submits and returns the reference number. Without an answer within ten minutes, the browser is closed and nothing is submitted.
+The names in this section are generic. The services and technologies the POC used for each of them are in section 4.
+
+### 3.1 The components
+
+| Component | What it does |
+|---|---|
+| **People and outside systems** | |
+| Requester | The staff member who asks, and the only person who may approve |
+| Slack | Where the requester writes the request, checks the form and approves |
+| LLM | Turns the sentence into suggested form values. It suggests and does nothing else |
+| Target web application | The system with no API, used through its screens with an account issued for the automation |
+| **The system** | |
+| Slack app | The system's side of the conversation: receives the command, shows the form, sends the screenshot, takes the approval |
+| Form definition | One description of the fields, their allowed values and their rules. The form in Slack, the instructions to the LLM and the browser's work all follow from it |
+| Request manager | Owns each request from form to result: the rule checks, duplicates, the wait for approval, who may approve, expiry |
+| Browser worker | A browser without a screen, driven by a fixed script: signs in, fills in the form, reads the confirmation back, takes the screenshot, submits |
+| **The environment it runs in** | |
+| Container runtime | Keeps the system running as one container, always on |
+| Image registry | Stores the packaged system that the runtime starts |
+| Secret store | Holds the Slack credentials and the web application account, and hands them to the system when it starts |
+| Private network with a fixed outbound address | The system accepts no incoming connection. Everything it sends leaves through one address, which the web application's owner registers |
+| Log store | One line per event, with secrets removed |
+| Access roles | What the system itself may do in the cloud: call the one LLM model, and nothing else |
+| Infrastructure templates | Create and remove the whole environment the same way every time |
+
+### 3.2 The flow
+
+**When the system starts.** The container runtime takes the packaged system from the image registry, starts it inside the private network and hands it its credentials from the secret store. The Slack app then opens a connection out to Slack and keeps it open. Requests arrive over that connection, so nothing has to be reachable from the internet.
+
+**For each request:**
+
+| Step | Components | What happens |
+|---|---|---|
+| 1. Ask | Requester, Slack, Slack app | The requester types a command followed by one sentence, for example "Mr Tanaka from Acme, tomorrow at 2 pm, head office, floor 12". Slack passes it to the Slack app |
+| 2. Pre-fill | Slack app, form definition, LLM | The sentence goes to the LLM with the list of fields and their allowed values. The LLM returns suggested values, and any that do not fit the form definition are dropped. If the LLM fails, the form opens empty and the rest works the same |
+| 3. Review | Slack app, requester | The form opens in Slack, pre-filled, with a note to check every field. The requester corrects it and sends it |
+| 4. Check | Request manager, form definition | The values are checked against the rules. A broken rule is shown on its field, and the browser is not started. A request the same person has already made is refused, with its reference number if it was submitted |
+| 5. Fill | Browser worker, fixed outbound address, target web application | The worker opens a browser, signs in with the dedicated account and fills in the form screen by screen, as far as the confirmation screen. If the web application rejects a value, its message goes to the requester word for word. If sign-in fails, or asks for a CAPTCHA or a one-time code, the worker stops and the requester is told that a person is needed |
+| 6. Read back | Browser worker | The worker reads the confirmation screen, compares it with what the requester sent and takes a screenshot. If the two differ, it stops, the fields are named and no approval is offered |
+| 7. Ask for approval | Slack app, request manager | The requester receives the screenshot and a summary of the values by direct message, with three choices: submit, edit or cancel. The request waits with the browser still open on the confirmation screen, so what the screenshot shows is exactly what will be submitted |
+| 8. Finish | Request manager, browser worker, Slack app | Submit: the worker presses the last button and the reference number is returned to the requester. Edit: the form reopens with the same values, and sending it replaces the waiting request. Cancel, or no answer within ten minutes: the browser is closed and nothing is submitted. A click by anyone other than the requester is refused |
+
+Every step writes a line to the log store.
 
 ```mermaid
 sequenceDiagram
     actor R as Requester
-    participant S as System
+    participant A as Slack app
     participant L as LLM
-    participant W as Web application
+    participant M as Request manager
+    participant B as Browser worker
+    participant W as Target web application
 
-    R->>S: One sentence, in Slack
-    S->>L: The sentence
-    L-->>S: Suggested form values
-    S-->>R: Pre-filled form
-    R->>S: Checked form
-    S->>W: Sign in and fill in the form
-    W-->>S: Confirmation screen
-    S->>S: Read back and compare
-    S-->>R: Screenshot, with approve, edit, cancel
-    R->>S: Approve
-    S->>W: Submit
-    W-->>S: Reference number
-    S-->>R: Reference number
+    R->>A: One sentence, in Slack
+    A->>L: The sentence and the list of fields
+    L-->>A: Suggested values
+    A-->>R: Pre-filled form
+    R->>A: Checked form
+    A->>M: New request
+    M->>M: Check the rules and duplicates
+    M->>B: Fill in
+    Note over B,W: Through the fixed outbound address
+    B->>W: Sign in, fill in the form
+    W-->>B: Confirmation screen
+    B->>B: Read back and compare
+    B-->>M: Screenshot
+    M-->>A: Ask for approval
+    A-->>R: Screenshot, with submit, edit, cancel
+    R->>A: Submit
+    A->>M: Approved by the requester
+    M->>B: Submit
+    B->>W: Press the last button
+    W-->>B: Reference number
+    B-->>M: Reference number
+    M-->>A: Result
+    A-->>R: Reference number
 ```
 
 ## 4. What it is made of
 
-One small system runs in the organisation's own AWS environment. It opens its connection to Slack from the inside, so nothing in it is reachable from the internet.
+The POC built each component of section 3 with the services and technologies below. Everything on the cloud side sits in one AWS account and one Region.
 
 ```mermaid
 flowchart LR
-    U[Staff member] --- SL[Slack]
-    subgraph AWS[The organisation's AWS environment]
-        APP[Slack app]
-        BW[Browser worker]
-        LLM[Amazon Bedrock<br/>the LLM]
-        OUT[Fixed outbound<br/>IP address]
+    U[Staff member] --- SL[Slack workspace]
+    subgraph AWS[AWS account, one Region]
+        subgraph VPC[Amazon VPC, private subnet]
+            subgraph TASK[Amazon ECS on AWS Fargate: one task]
+                APP[Node.js application<br/>Slack Bolt, Socket Mode]
+                BW[Playwright<br/>headless Chromium]
+            end
+        end
+        NAT[NAT Gateway<br/>with an Elastic IP]
+        BR[Amazon Bedrock<br/>GLM 4.7 Flash]
+        SM[AWS Secrets Manager]
+        ECR[Amazon ECR]
+        CW[Amazon CloudWatch Logs]
     end
-    SL <--> APP
-    APP --> LLM
+    SL <-->|WebSocket opened by the task| APP
     APP --> BW
-    BW --> OUT
-    OUT --> WEB[Web application<br/>registered addresses only]
+    APP --> BR
+    BW --> NAT
+    NAT --> WEB[Target web application]
+    SM -.->|credentials at start| TASK
+    ECR -.->|image| TASK
+    TASK -.->|log| CW
 ```
 
-| Component | Role |
-|---|---|
-| Slack app | Receives the command, shows the form, sends the screenshot and takes the approval |
-| LLM | Turns the sentence into suggested form values. Optional. On AWS it is a model on Amazon Bedrock, so the sentence stays inside AWS |
-| Browser worker | A fixed script, not an LLM: signs in, fills in the form, reads the confirmation back, submits |
-| Container service | Keeps one small container running at all times. The browser runs inside it |
-| Fixed outbound IP address | Everything the system sends to the web application leaves through one address, which the owner registers |
-| Secret store and logs | Hold the Slack credentials and the web application account. Secrets are removed from the log |
+The diagram shows who talks to whom. On the network, every connection the task opens leaves through the NAT Gateway: to Slack, to Amazon Bedrock and to the web application.
+
+| Component | Built with | Notes |
+|---|---|---|
+| Slack app | Node.js 22 or later (JavaScript), with Slack's Bolt framework in Socket Mode | Socket Mode is a WebSocket that the application opens out to Slack. The system needs no public address |
+| Form definition, request manager | Plain JavaScript in the same application | Requests waiting for approval are held in the memory of that one process |
+| LLM | Amazon Bedrock, model GLM 4.7 Flash | Called with the system's own access role, without an API key, so the sentence stays inside AWS. Also run with DeepSeek V4.1 Flash through OpenRouter, an outside provider |
+| Browser worker | Playwright driving headless Chromium | Runs inside the same container, and is the reason for the container's size |
+| Target web application | A simulated website, in a second container beside the system | To be replaced by the real web application |
+| Container runtime | Amazon ECS on AWS Fargate | One task, always on: 1 vCPU, 2 GB of memory, ARM64 |
+| Image registry | Amazon ECR | One Docker image, about 1 GB compressed because it carries the browser |
+| Secret store | AWS Secrets Manager | One secret: the Slack tokens and the web application account |
+| Private network with a fixed outbound address | Amazon VPC with a private subnet, and one NAT Gateway with an Elastic IP | A security group with no inbound rule, and outbound HTTPS only. The Elastic IP is the address the web application's owner registers |
+| Log store | Amazon CloudWatch Logs | Kept for 7 days |
+| Access roles | AWS IAM, two roles | One lets ECS start the container: pull the image, read the secret, write the log. The other lets the application call the one Bedrock model |
+| Infrastructure templates | AWS CloudFormation, two stacks | One for the image registry and the secret, one for everything else |
 
 ## 5. Safeguards
 

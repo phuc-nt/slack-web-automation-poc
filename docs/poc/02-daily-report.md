@@ -29,62 +29,121 @@ A project lead writes the daily report by reading the day's messages and checkin
 
 ## 3. How it works
 
-1. A project member asks for the report in Slack, for today or an earlier date, or a daily schedule starts it.
-2. The system reads the day's messages in the channels configured for the project, and the project's issues from Jira. Jira is only read, never changed.
-3. Before the LLM is involved, the system marks each issue by rule: overdue, and not mentioned in the day's chat.
-4. The LLM writes the report from both, in one call.
-5. The report is posted to one fixed channel. The person who asked receives a pointer to it, not the report itself.
+The names in this section are generic. The services and technologies the POC used for each of them are in section 4.
 
-The report has a header with the date, the number of messages and issues read, and a notice that an LLM wrote it and that it should be checked. Eight sections follow, always in the same order: summary, done today, in progress, blockers and risks, decisions, open questions, Jira check, next steps.
+### 3.1 The components
 
-The Jira check reports four things: issues that are overdue; issues the chat says are finished while Jira does not; issues the chat says are blocked or slipping; and open issues due within three days that nobody mentioned. Issues that are on track are left out.
+| Component | What it does |
+|---|---|
+| **People and outside systems** | |
+| Project members | Ask for a report, and read it in the report channel |
+| Slack | The project's channels, which are read, and one report channel, which is written |
+| Jira | The project's issues, which are read and never changed |
+| LLM | Writes the text of the report from what it is given. It writes and does nothing else |
+| **The system** | |
+| Slack app | The system's side of the conversation: receives the request, answers the person who asked, posts the report |
+| Daily schedule | A timer that starts the day's report at a set time, without anyone asking |
+| Channel reader | Collects the day's messages of each configured channel, with thread replies, people's names and file names, in the order they were written. Leaves out join and leave notices and the system's own earlier reports |
+| Issue reader | Runs one read-only query and keeps, for each issue, its key, summary, type, status, assignee, priority, due date and last update |
+| Report service | Runs one report from start to end: the day's time window, the marks on each issue, the fallback when Jira fails, the clean-up, the posting |
+| Report writer | Holds the fixed instructions and makes the call to the LLM |
+| **The environment it runs in** | |
+| Container runtime | Keeps the system running as one container, always on |
+| Image registry | Stores the packaged system that the runtime starts |
+| Secret store | Holds the Slack and Jira credentials, and hands them to the system when it starts |
+| Private network | The system accepts no incoming connection. It needs no fixed outbound address, unless the Jira site restricts access by address |
+| Log store | One line per event, with secrets removed |
+| Access roles | What the system itself may do in the cloud: call the one LLM model, and nothing else |
+| Infrastructure templates | Create and remove the whole environment the same way every time |
+
+### 3.2 The flow
+
+**When the system starts.** The container runtime takes the packaged system from the image registry, starts it inside the private network and hands it its credentials from the secret store. The Slack app then opens a connection out to Slack and keeps it open, and the daily schedule is set for its time. Requests arrive over that connection, so nothing has to be reachable from the internet.
+
+**For each report:**
+
+| Step | Components | What happens |
+|---|---|---|
+| 1. Start | Project member and Slack app, or the daily schedule | A project member types a command in Slack, for today or with an earlier date, and the Slack app tells that person privately that the report is being written. At the set time, the daily schedule starts the same work for today |
+| 2. Set the day | Report service | The day runs from midnight to midnight, local time. For today it ends at the moment of the request |
+| 3. Read the chat | Channel reader, Slack | That day's messages are read from every configured channel, with their replies and the names of the people who wrote them |
+| 4. Read the issues | Issue reader, Jira | The project's open issues, and those updated in the last day, are read, up to 100. If Jira does not answer, the work goes on from the chat alone and the header of the report says why |
+| 5. Mark | Report service | Before the LLM is involved, each issue is marked by rule: overdue when its due date is before the report's date and it is not done, and not mentioned when its key does not appear in the day's messages. With no messages and no issues, the report is one line and the LLM is not called |
+| 6. Write | Report writer, LLM | The chat, the marked issue list and the fixed instructions go to the LLM in one call. The instructions set the sections of the report and the findings of the Jira check, and tell the LLM to treat everything in the chat and the issues as content to report on, never as instructions |
+| 7. Clean up | Report service | Mentions of people and groups become plain text, so that nobody is notified. The header is added, and a long report is split into several messages |
+| 8. Post | Slack app, Slack | The report goes to the one report channel. The person who asked receives a private pointer to it, not the report itself |
+| 9. If it fails | Report service, Slack app, log store | If Slack cannot be read or the LLM fails, nothing is posted and the person who asked is told why. A scheduled run records the failure, does not retry, and is set again for the next day |
+
+Every step writes a line to the log store.
+
+**The report.** A header gives the date, the number of messages and issues read, and a notice that an LLM wrote the report and that it should be checked. Eight sections follow, always in the same order: summary, done today, in progress, blockers and risks, decisions, open questions, Jira check, next steps.
+
+**The Jira check** reports four things: issues that are overdue; issues the chat says are finished while Jira does not; issues the chat says are blocked or slipping; and open issues due within three days that nobody mentioned. Issues that are on track are left out.
 
 ```mermaid
 sequenceDiagram
     actor M as Project member
-    participant S as System
+    participant A as Slack app or daily schedule
+    participant R as Report service
     participant K as Slack channels
     participant J as Jira
     participant L as LLM
 
-    M->>S: Asks for the report (or the schedule starts it)
-    S->>K: Read the day's messages
-    S->>J: Read the project's issues
-    S->>S: Mark overdue and unmentioned issues
-    S->>L: Messages and issues
-    L-->>S: The report
-    S->>K: Post to the report channel
-    S-->>M: Pointer to the report
+    M->>A: Asks for the report, in Slack
+    A->>R: Report for this day
+    R->>K: Channel reader: the day's messages
+    K-->>R: Messages, replies, names
+    R->>J: Issue reader: the project's issues
+    J-->>R: Issues
+    R->>R: Mark overdue and unmentioned issues
+    R->>L: Report writer: chat, marked issues, instructions
+    L-->>R: The report text
+    R->>R: Clean up, add the header
+    R->>K: Post to the report channel
+    A-->>M: Pointer to the report
 ```
 
 ## 4. What it is made of
 
-One small system runs in the organisation's own AWS environment. It opens its connections to Slack and Jira from the inside, so nothing in it is reachable from the internet.
+The POC built each component of section 3 with the services and technologies below. Everything on the cloud side sits in one AWS account and one Region.
 
 ```mermaid
 flowchart LR
-    U[Project members] --- SL[Slack<br/>project channels<br/>report channel]
-    subgraph AWS[The organisation's AWS environment]
-        APP[Slack app<br/>and daily schedule]
-        RW[Report writer]
-        LLM[Amazon Bedrock<br/>the LLM]
+    U[Project members] --- SL[Slack workspace<br/>project channels<br/>report channel]
+    subgraph AWS[AWS account, one Region]
+        subgraph VPC[Amazon VPC]
+            subgraph TASK[Amazon ECS on AWS Fargate: one task]
+                APP[Node.js application<br/>Slack Bolt, Socket Mode<br/>daily timer]
+            end
+        end
+        BR[Amazon Bedrock<br/>GLM 4.7 Flash]
+        SM[AWS Secrets Manager]
+        ECR[Amazon ECR]
+        CW[Amazon CloudWatch Logs]
     end
-    SL <--> APP
-    APP --> RW
-    RW --> LLM
-    RW -->|read only| JIRA[Jira Cloud]
+    SL <-->|WebSocket opened by the task<br/>Slack Web API| APP
+    APP -->|REST API, read only| JIRA[Jira Cloud]
+    APP --> BR
+    SM -.->|credentials at start| TASK
+    ECR -.->|image| TASK
+    TASK -.->|log| CW
 ```
 
-| Component | Role |
-|---|---|
-| Slack app | Receives the request, reads the history of the channels it was invited to, posts the report |
-| Daily schedule | Starts the report at a set time every day, inside the same system |
-| Jira reader | Reads the project's issues with a read-only account |
-| Report writer | Puts messages and issues together, marks the issues by rule, and asks the LLM for the text |
-| LLM | Writes the report. Required. On AWS it is a model on Amazon Bedrock, so the chat stays inside AWS |
-| Container service, secret store, logs | One small container that is always on. The Slack and Jira credentials are kept in the secret store, and secrets are removed from the log |
-
-No browser and no fixed IP address are involved, unless the Jira site restricts access by address.
+| Component | Built with | Notes |
+|---|---|---|
+| Slack app | Node.js 22 or later (JavaScript), with Slack's Bolt framework in Socket Mode | Socket Mode is a WebSocket that the application opens out to Slack. The system needs no public address |
+| Daily schedule | A timer inside the same Node.js process | No separate scheduling service. A report due while the system is stopped is not posted |
+| Channel reader | The Slack Web API: channel history, thread replies, user names | Reads only the channels the app was invited to |
+| Issue reader | The Jira Cloud REST API, version 3: one JQL search over HTTPS | Signs in with an Atlassian account's email and API token |
+| Report service, report writer | Plain JavaScript in the same application | |
+| LLM | Amazon Bedrock, model GLM 4.7 Flash | Called with the system's own access role, without an API key, so the chat stays inside AWS. Also run with DeepSeek V4.1 Flash through OpenRouter, an outside provider |
+| Container runtime | Amazon ECS on AWS Fargate | One task, always on. In the POC it is the task of POC 1 (1 vCPU, 2 GB of memory, ARM64), which is larger than the report needs |
+| Image registry | Amazon ECR | One Docker image |
+| Secret store | AWS Secrets Manager | One secret: the Slack tokens, and the Atlassian email and API token |
+| Private network | Amazon VPC | A security group with no inbound rule, and outbound HTTPS only. In the POC the task ran in the private subnet behind the NAT Gateway of POC 1. By itself, a public subnet without a NAT Gateway is enough; that layout was not run |
+| Log store | Amazon CloudWatch Logs | Kept for 7 days |
+| Access roles | AWS IAM, two roles | One lets ECS start the container: pull the image, read the secret, write the log. The other lets the application call the one Bedrock model |
+| Infrastructure templates | AWS CloudFormation, two stacks | One for the image registry and the secret, one for everything else |
 
 ## 5. Safeguards
 

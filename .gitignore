@@ -7,6 +7,10 @@ node_modules/
 !.env.example
 *.pem
 *.key
+*.p12
+*.pfx
+*.cer
+infra/kb-cert/
 poc-secrets.json
 
 # The operator's own environment and assistant instructions: not for readers of the repo
@@ -26,3 +30,5 @@ coverage/
 .DS_Store
 .vscode/
 .idea/
+__pycache__/
+*.pyc

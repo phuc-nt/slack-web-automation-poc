@@ -18,6 +18,7 @@ export function loadConfig(env = process.env) {
     headless: flag(env.BROWSER_HEADLESS, true),
     approvalTtlMs: Number(env.APPROVAL_TTL_SECONDS || 600) * 1000,
     artifactsDir: env.ARTIFACTS_DIR || 'artifacts',
+    logFile: env.LOG_FILE || `${env.ARTIFACTS_DIR || 'artifacts'}/logs/slack-bot.jsonl`,
     llmProvider,
     llmModel,
     openRouterApiKey: env.OPENROUTER_API_KEY || '',
@@ -34,5 +35,10 @@ export function loadConfig(env = process.env) {
     jiraApiToken: env.JIRA_API_TOKEN || '',
     jiraProjectKey: env.JIRA_PROJECT_KEY || '',
     jiraJql: env.JIRA_JQL || '',
+    kbMcpUrl: env.KB_MCP_URL || '',
+    kbMcpTarget: env.KB_MCP_TARGET || 'managed-kb',
+    kbRegion: env.KB_REGION || env.BEDROCK_REGION || env.AWS_REGION || env.AWS_DEFAULT_REGION || '',
+    kbModel: env.KB_MODEL || llmModel,
+    kbResults: Number(env.KB_RESULTS || 8),
   };
 }

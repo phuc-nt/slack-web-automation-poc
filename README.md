@@ -15,10 +15,18 @@ Tất cả bằng tiếng Anh. Đọc theo thứ tự:
 4. [docs/04-operating-cost.md](docs/04-operating-cost.md): ước tính chi phí vận hành hằng tháng, từng khoản, và công thức để tính lại cho Region, model hay khối lượng khác.
 5. [docs/05-prerequisites-and-access.md](docs/05-prerequisites-and-access.md): mọi công cụ, dịch vụ và tính năng cần dùng, kèm quyền phải xin và thứ phải đăng ký trước, theo từng giai đoạn tái hiện. Đọc trước khi bắt đầu.
 
+6. [docs/06-dify-and-bedrock.md](docs/06-dify-and-bedrock.md): so sánh cơ bản Dify và Amazon Bedrock khi dựng một nền tảng AI nội bộ: mỗi bên là gì, làm được gì, độ tương thích với các dịch vụ AWS khác, phiên bản, license và chi phí. Cho người ra quyết định.
+7. [docs/07-customer-support-bot-dify-vs-bedrock.md](docs/07-customer-support-bot-dify-vs-bedrock.md): một bot chăm sóc khách hàng trên Slack và trên web app, dựng bằng Dify thì thế nào, dựng bằng Bedrock thì thế nào, kèm diagram cho từng trường hợp và bảng so sánh. Cho người ra quyết định.
+8. [docs/08-knowledge-base-chatbot.md](docs/08-knowledge-base-chatbot.md): chatbot trên Slack trả lời từ một kho kiến thức (Amazon Bedrock Managed Knowledge Base) lấy nội dung từ Confluence và SharePoint, kèm MCP server để các IDE agent dùng chung kho đó. Cho kỹ sư dựng lại trên môi trường của mình.
+9. [docs/09-bedrock-managed-knowledge-base.md](docs/09-bedrock-managed-knowledge-base.md): giới thiệu Amazon Bedrock Managed Knowledge Base từ cơ bản: nó là gì, các connector, tính năng, cách index và cách tìm kiếm, phân quyền theo tài liệu, những gì cấu hình được, chi phí, và những gì repo này quan sát được khi dùng. Cho người mới tiếp cận dịch vụ này.
+
+Tài liệu 6 và 7 là so sánh dựa trên tài liệu của hai nhà cung cấp, chưa dựng hay chạy thử trong repo này.
+
 Mỗi POC có tài liệu riêng:
 
 - [docs/poc/01-web-form-automation.md](docs/poc/01-web-form-automation.md)
 - [docs/poc/02-daily-report.md](docs/poc/02-daily-report.md)
+- [docs/poc/03-knowledge-base-chatbot.md](docs/poc/03-knowledge-base-chatbot.md)
 
 Mỗi tài liệu POC mô tả một concept đã kiểm chứng, viết cho người ra quyết định và không kèm code: use case, cách hoạt động, các thành phần, các cơ chế an toàn, kết quả kiểm chứng, những quyền cần cấp cho team, ước tính chi phí, rủi ro và bước tiếp theo. Chi tiết kỹ thuật (module, cấu hình, triển khai AWS, bảng giá, danh sách quyền đầy đủ) nằm trong tài liệu 1 đến 5 và trong source code.
 

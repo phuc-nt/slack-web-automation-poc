@@ -14,11 +14,18 @@
     "seed": "node --env-file-if-exists=.env scripts/seed-sample-channel.js",
     "seed:jira": "node --env-file-if-exists=.env scripts/seed-jira-issues.js",
     "demo": "node --env-file-if-exists=.env scripts/run-local-demo.js",
-    "test": "node --env-file-if-exists=.env --test --test-concurrency=1 \"test/*.test.js\""
+    "test": "node --env-file-if-exists=.env --test --test-concurrency=1 \"test/*.test.js\"",
+    "kb:build": "kb/build.sh",
+    "kb:confluence": "node --env-file-if-exists=.env -e \"require('node:child_process').execFileSync('python3',['kb/publish_confluence.py'],{stdio:'inherit'})\"",
+    "kb:check": "node --env-file-if-exists=.env kb/check-answers.js"
   },
   "dependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
     "@aws-sdk/client-bedrock-runtime": "^3.1149.0",
+    "@aws-sdk/credential-providers": "^3.1150.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@slack/bolt": "^5.1.0",
+    "@smithy/signature-v4": "^5.7.4",
     "playwright": "^1.63.0"
   }
 }
